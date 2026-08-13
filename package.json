@@ -1,0 +1,24 @@
+{
+  "name": "dicta",
+  "private": true,
+  "version": "0.7.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:web": "tsc && vite build",
+    "build:mcp": "cargo build --release --manifest-path mcp/Cargo.toml",
+    "build": "npm run build:web && npm run build:mcp",
+    "tauri": "tauri",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@phosphor-icons/web": "^2.1.2",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5.8.3",
+    "vite": "^7"
+  }
+}

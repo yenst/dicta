@@ -1,0 +1,25 @@
+[package]
+name = "dicta"
+version = "0.7.0"
+description = "Capture screen and voice into prompt-ready project packets"
+authors = ["Dicta"]
+edition = "2021"
+
+[lib]
+name = "dicta_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+cc = "1"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+hound = "3.5"
+whisper-rs = { version = "0.16", features = ["metal"] }

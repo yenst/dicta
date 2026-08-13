@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Dicta records your narration alongside the screen to create context for coding tasks.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Dicta records your display so you can show visual context while explaining a coding task.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Dicta transcribes your narration automatically so coding agents can use each recording as prompt context.</string>
+</dict>
+</plist>

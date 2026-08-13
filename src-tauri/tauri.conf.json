@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Dicta",
+  "version": "0.7.0",
+  "identifier": "com.dicta.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Dicta",
+        "width": 1080,
+        "height": 865,
+        "minWidth": 820,
+        "minHeight": 620,
+        "resizable": true,
+        "center": true,
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../mcp/target/release/dicta-mcp": "dicta-mcp",
+      "resources/ggml-base-q5_1.bin": "ggml-base-q5_1.bin"
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "Record screen and voice as prompt context",
+    "macOS": {
+      "minimumSystemVersion": "15.0",
+      "infoPlist": "Info.plist"
+    }
+  }
+}
