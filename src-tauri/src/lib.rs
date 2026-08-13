@@ -27,6 +27,7 @@ const QUALITY_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 const QUALITY_MODEL_SHA1: &str = "e050f7970618a659205450ad97eb95a18d69c9ee";
 const QUALITY_MODEL_DOWNLOAD_BYTES: u64 = 547 * 1024 * 1024;
+const DEFAULT_SHORTCUT_ID: &str = "command_shift_r";
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -147,6 +148,39 @@ struct ModelDownloadEvent {
     message: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AppSettings {
+    #[serde(default = "default_shortcut_id")]
+    shortcut_id: String,
+    #[serde(default = "enabled_by_default")]
+    cleanup_merged_videos: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            shortcut_id: default_shortcut_id(),
+            cleanup_merged_videos: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct CleanupSummary {
+    removed_files: usize,
+    freed_bytes: u64,
+    cleaned_branches: Vec<String>,
+    default_branch: Option<String>,
+    message: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct BranchMetadata {
+    git_branch: String,
+    #[serde(default)]
+    head_oid: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct RecorderEventPayload {
     event: String,
@@ -188,6 +222,49 @@ impl AppState {
                 session: None,
             }),
         }
+    }
+}
+
+fn default_shortcut_id() -> String {
+    DEFAULT_SHORTCUT_ID.to_string()
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+fn settings_path(root: &Path) -> PathBuf {
+    root.join("settings.json")
+}
+
+fn read_settings(root: &Path) -> AppSettings {
+    fs::read_to_string(settings_path(root))
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .filter(|settings: &AppSettings| shortcut_for_id(&settings.shortcut_id).is_some())
+        .unwrap_or_default()
+}
+
+fn write_settings(root: &Path, settings: &AppSettings) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|error| format!("Could not serialize Dicta settings: {error}"))?;
+    fs::write(settings_path(root), format!("{json}\n"))
+        .map_err(|error| format!("Could not save Dicta settings: {error}"))
+}
+
+fn shortcut_for_id(id: &str) -> Option<Shortcut> {
+    match id {
+        "command_shift_r" => Some(Shortcut::new(
+            Some(Modifiers::SUPER | Modifiers::SHIFT),
+            Code::KeyR,
+        )),
+        "command_shift_d" => Some(Shortcut::new(
+            Some(Modifiers::SUPER | Modifiers::SHIFT),
+            Code::KeyD,
+        )),
+        "option_space" => Some(Shortcut::new(Some(Modifiers::ALT), Code::Space)),
+        "control_space" => Some(Shortcut::new(Some(Modifiers::CONTROL), Code::Space)),
+        _ => None,
     }
 }
 
@@ -836,6 +913,54 @@ fn git_branch(source_path: &Path) -> Result<String, String> {
     }
 }
 
+fn git_revision(source_path: &Path) -> Option<String> {
+    git_output(source_path, &["rev-parse", "HEAD"])
+        .ok()
+        .filter(|revision| !revision.is_empty())
+}
+
+fn git_ref_exists(source_path: &Path, reference: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(source_path)
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn default_git_branch(source_path: &Path) -> Option<String> {
+    if let Ok(remote_head) = git_output(
+        source_path,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    ) {
+        if let Some(branch) = remote_head.strip_prefix("origin/") {
+            if !branch.is_empty() {
+                return Some(branch.to_string());
+            }
+        }
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|branch| git_ref_exists(source_path, &format!("refs/heads/{branch}")))
+        .map(str::to_string)
+}
+
+fn revision_is_merged(source_path: &Path, revision: &str, default_branch: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(source_path)
+        .args(["merge-base", "--is-ancestor", revision, default_branch])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn branch_folder_name(branch: &str) -> String {
     let mut folder = String::new();
     for character in branch.chars() {
@@ -883,17 +1008,144 @@ fn active_recording_root(
     }
 }
 
-fn write_branch_metadata(path: &Path, branch: &str) -> Result<(), String> {
+fn write_branch_metadata(
+    path: &Path,
+    branch: &str,
+    source_path: Option<&Path>,
+) -> Result<(), String> {
     fs::create_dir_all(path.join("recordings"))
         .map_err(|error| format!("Could not create branch packet folder: {error}"))?;
     let json = serde_json::to_string_pretty(&serde_json::json!({
         "git_branch": branch,
         "folder_name": branch_folder_name(branch),
+        "head_oid": source_path.and_then(git_revision),
         "updated_at": Utc::now(),
     }))
     .map_err(|error| format!("Could not serialize branch metadata: {error}"))?;
     fs::write(path.join("branch.json"), format!("{json}\n"))
         .map_err(|error| format!("Could not save branch metadata: {error}"))
+}
+
+fn remove_video_files(directory: &Path) -> Result<(usize, u64), String> {
+    let mut removed_files = 0;
+    let mut freed_bytes = 0;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) => return Err(format!("Could not read {}: {error}", directory.display())),
+    };
+    for entry in entries.flatten() {
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Could not inspect {}: {error}", entry.path().display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            let (nested_files, nested_bytes) = remove_video_files(&entry.path())?;
+            removed_files += nested_files;
+            freed_bytes += nested_bytes;
+        } else if file_type.is_file()
+            && entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("mp4")
+        {
+            let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            fs::remove_file(entry.path()).map_err(|error| {
+                format!(
+                    "Could not remove merged recording {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            removed_files += 1;
+            freed_bytes += size;
+        }
+    }
+    Ok((removed_files, freed_bytes))
+}
+
+fn cleanup_merged_videos_for_project(
+    root: &Path,
+    metadata: &ProjectFile,
+) -> Result<CleanupSummary, String> {
+    let settings = read_settings(root);
+    if !settings.cleanup_merged_videos {
+        return Ok(CleanupSummary {
+            message: "Merged-video cleanup is off.".to_string(),
+            ..CleanupSummary::default()
+        });
+    }
+    let source_path = metadata
+        .source_path
+        .as_deref()
+        .map(Path::new)
+        .ok_or_else(|| "This project is not linked to Git".to_string())?;
+    let default_branch = default_git_branch(source_path)
+        .ok_or_else(|| "Could not determine the repository default branch".to_string())?;
+    let active_branch = git_branch(source_path).ok();
+    let branches_path = linked_storage_dir(metadata)
+        .ok_or_else(|| "This project is not linked to Git".to_string())?
+        .join("branches");
+    let mut summary = CleanupSummary {
+        default_branch: Some(default_branch.clone()),
+        ..CleanupSummary::default()
+    };
+    let entries = match fs::read_dir(&branches_path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            summary.message = "No branch recordings to clean.".to_string();
+            return Ok(summary);
+        }
+        Err(error) => return Err(format!("Could not inspect branch recordings: {error}")),
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let branch_path = entry.path();
+        let Ok(content) = fs::read_to_string(branch_path.join("branch.json")) else {
+            continue;
+        };
+        let Ok(branch_metadata) = serde_json::from_str::<BranchMetadata>(&content) else {
+            continue;
+        };
+        if branch_metadata.git_branch == default_branch
+            || active_branch.as_deref() == Some(branch_metadata.git_branch.as_str())
+        {
+            continue;
+        }
+        let revision = branch_metadata.head_oid.or_else(|| {
+            let reference = format!("refs/heads/{}", branch_metadata.git_branch);
+            git_ref_exists(source_path, &reference).then_some(reference)
+        });
+        let Some(revision) = revision else {
+            continue;
+        };
+        if !revision_is_merged(source_path, &revision, &default_branch) {
+            continue;
+        }
+        let (removed_files, freed_bytes) = remove_video_files(&branch_path.join("recordings"))?;
+        if removed_files > 0 {
+            summary.removed_files += removed_files;
+            summary.freed_bytes += freed_bytes;
+            summary.cleaned_branches.push(branch_metadata.git_branch);
+        }
+    }
+    summary.message = if summary.removed_files == 0 {
+        format!("No merged videos found for {default_branch}.")
+    } else {
+        format!(
+            "Removed {} merged video{}.",
+            summary.removed_files,
+            if summary.removed_files == 1 { "" } else { "s" }
+        )
+    };
+    Ok(summary)
 }
 
 fn project_view(root: &Path, metadata: ProjectFile) -> Project {
@@ -1078,7 +1330,11 @@ fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Proje
     fs::create_dir_all(&project_path)
         .map_err(|error| format!("Could not create linked project: {error}"))?;
     let (branch, branch_path) = linked_branch_dir(&state.root, &metadata)?;
-    write_branch_metadata(&branch_path, &branch)?;
+    write_branch_metadata(
+        &branch_path,
+        &branch,
+        metadata.source_path.as_deref().map(Path::new),
+    )?;
     let json = serde_json::to_string_pretty(&metadata)
         .map_err(|error| format!("Could not serialize linked project: {error}"))?;
     fs::write(project_path.join("project.json"), format!("{json}\n"))
@@ -1096,7 +1352,61 @@ fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Proje
 #[tauri::command]
 fn refresh_project(project_id: String, state: State<'_, AppState>) -> Result<Project, String> {
     let metadata = read_project(&state.root, &project_id)?;
+    let _ = cleanup_merged_videos_for_project(&state.root, &metadata);
     Ok(project_view(&state.root, metadata))
+}
+
+#[tauri::command]
+fn get_app_settings(state: State<'_, AppState>) -> AppSettings {
+    read_settings(&state.root)
+}
+
+#[tauri::command]
+fn set_shortcut(
+    app: AppHandle,
+    shortcut_id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    let next_shortcut =
+        shortcut_for_id(&shortcut_id).ok_or_else(|| format!("Unknown shortcut: {shortcut_id}"))?;
+    let previous_settings = read_settings(&state.root);
+    let previous_shortcut = shortcut_for_id(&previous_settings.shortcut_id)
+        .expect("stored shortcut is always validated");
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| format!("Could not release the current shortcut: {error}"))?;
+    if let Err(error) = app.global_shortcut().register(next_shortcut) {
+        let _ = app.global_shortcut().register(previous_shortcut);
+        return Err(format!("Could not register that shortcut: {error}"));
+    }
+    let mut next_settings = previous_settings.clone();
+    next_settings.shortcut_id = shortcut_id;
+    if let Err(error) = write_settings(&state.root, &next_settings) {
+        let _ = app.global_shortcut().unregister_all();
+        let _ = app.global_shortcut().register(previous_shortcut);
+        return Err(error);
+    }
+    Ok(next_settings)
+}
+
+#[tauri::command]
+fn set_cleanup_merged_videos(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    let mut settings = read_settings(&state.root);
+    settings.cleanup_merged_videos = enabled;
+    write_settings(&state.root, &settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+fn cleanup_merged_videos(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<CleanupSummary, String> {
+    let metadata = read_project(&state.root, &project_id)?;
+    cleanup_merged_videos_for_project(&state.root, &metadata)
 }
 
 #[tauri::command]
@@ -1144,6 +1454,23 @@ fn recording_artifact_paths(metadata_path: &Path) -> Vec<PathBuf> {
     .into_iter()
     .map(|name| parent.join(name))
     .collect()
+}
+
+fn discard_recording_artifacts(recording: &Recording) {
+    let metadata_path = Path::new(&recording.metadata_path);
+    for artifact in recording_artifact_paths(metadata_path) {
+        if artifact.is_file() {
+            let _ = fs::remove_file(artifact);
+        }
+    }
+    if let Some(day_dir) = metadata_path.parent() {
+        let is_empty = fs::read_dir(day_dir)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if is_empty {
+            let _ = fs::remove_dir(day_dir);
+        }
+    }
 }
 
 #[tauri::command]
@@ -1212,7 +1539,11 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
     let project = read_project(&state.root, &project_id)?;
     let (git_branch, recording_root) = active_recording_root(&state.root, &project)?;
     if let Some(branch) = git_branch.as_deref() {
-        write_branch_metadata(&recording_root, branch)?;
+        write_branch_metadata(
+            &recording_root,
+            branch,
+            project.source_path.as_deref().map(Path::new),
+        )?;
     }
 
     let now_local = Local::now();
@@ -1249,7 +1580,7 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
         phase: RecordingPhase::Preparing,
         active_project_id: Some(project_id),
         active_video_path: Some(video_path_string.clone()),
-        started_at: Some(started_at),
+        started_at: None,
         last_error: None,
     };
     let status = inner.status.clone();
@@ -1651,28 +1982,36 @@ fn finalize_session(app: &AppHandle, error: Option<String>) -> (RecorderStatus, 
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut video_path = None;
+    let capture_started = matches!(
+        inner.status.phase,
+        RecordingPhase::Recording | RecordingPhase::Stopping
+    );
     if let Some(mut recording) = inner.session.take() {
-        let ended_at = Utc::now();
-        recording.ended_at = Some(ended_at);
-        recording.duration_seconds = Some(
-            ended_at
-                .signed_duration_since(recording.started_at)
-                .num_milliseconds() as f64
-                / 1000.0,
-        );
-        recording.size_bytes = fs::metadata(&recording.video_path)
-            .ok()
-            .map(|metadata| metadata.len());
-        recording.success = error.is_none();
-        if recording.success {
-            recording.transcription_status = "processing".to_string();
-            recording.transcription_error = None;
-            video_path = Some(recording.video_path.clone());
+        if error.is_some() && !capture_started {
+            discard_recording_artifacts(&recording);
         } else {
-            recording.transcription_status = "failed".to_string();
-            recording.transcription_error = error.clone();
+            let ended_at = Utc::now();
+            recording.ended_at = Some(ended_at);
+            recording.duration_seconds = Some(
+                ended_at
+                    .signed_duration_since(recording.started_at)
+                    .num_milliseconds() as f64
+                    / 1000.0,
+            );
+            recording.size_bytes = fs::metadata(&recording.video_path)
+                .ok()
+                .map(|metadata| metadata.len());
+            recording.success = error.is_none();
+            if recording.success {
+                recording.transcription_status = "processing".to_string();
+                recording.transcription_error = None;
+                video_path = Some(recording.video_path.clone());
+            } else {
+                recording.transcription_status = "failed".to_string();
+                recording.transcription_error = error.clone();
+            }
+            let _ = write_recording(&recording);
         }
-        let _ = write_recording(&recording);
     }
     inner.status.phase = if error.is_some() {
         RecordingPhase::Error
@@ -1706,7 +2045,12 @@ extern "C" fn native_recorder_callback(event: *const c_char, message: *const c_c
                     .inner
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let started_at = Utc::now();
+                if let Some(recording) = inner.session.as_mut() {
+                    recording.started_at = started_at;
+                }
                 inner.status.phase = RecordingPhase::Recording;
+                inner.status.started_at = Some(started_at);
                 inner.status.last_error = None;
                 inner.status.clone()
             };
@@ -1843,17 +2187,17 @@ pub fn run() {
     };
     fs::create_dir_all(&root).expect("failed to create Dicta folder");
 
-    let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyR);
-    let shortcut_for_handler = shortcut.clone();
+    let settings = read_settings(&root);
+    let shortcut = shortcut_for_id(&settings.shortcut_id)
+        .unwrap_or_else(|| shortcut_for_id(DEFAULT_SHORTCUT_ID).expect("default shortcut exists"));
 
     tauri::Builder::default()
         .manage(AppState::new(root))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, triggered, event| {
-                    if triggered == &shortcut_for_handler && event.state() == ShortcutState::Pressed
-                    {
+                .with_handler(move |app, _triggered, event| {
+                    if event.state() == ShortcutState::Pressed {
                         toggle_from_shortcut(app);
                     }
                 })
@@ -1869,6 +2213,10 @@ pub fn run() {
             create_project,
             link_project,
             refresh_project,
+            get_app_settings,
+            set_shortcut,
+            set_cleanup_merged_videos,
+            cleanup_merged_videos,
             select_project,
             list_recordings,
             delete_recording,
@@ -1885,16 +2233,11 @@ pub fn run() {
             let root = app.state::<AppState>().root.clone();
             queue_pending_transcriptions(&root);
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
-            app.global_shortcut().register(shortcut)?;
+            app.global_shortcut().register(shortcut.clone())?;
 
             let show = MenuItem::with_id(app, "show", "Show Dicta", true, None::<&str>)?;
-            let record = MenuItem::with_id(
-                app,
-                "record",
-                "Start / Stop Recording",
-                true,
-                Some("Cmd+Shift+R"),
-            )?;
+            let record =
+                MenuItem::with_id(app, "record", "Start / Stop Recording", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Dicta", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &record, &quit])?;
             let mut tray = TrayIconBuilder::new()
@@ -2047,6 +2390,45 @@ mod tests {
     }
 
     #[test]
+    fn permission_denied_start_discards_pending_recording_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "dicta-permission-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let day = root.join("recordings/2026-08-13");
+        fs::create_dir_all(&day).unwrap();
+        let video_path = day.join("20-48-00.mp4");
+        let metadata_path = day.join("20-48-00.json");
+        fs::write(&video_path, []).unwrap();
+        fs::write(&metadata_path, "pending").unwrap();
+        let recording = Recording {
+            id: "20260813-20-48-00".to_string(),
+            project_id: "peepel".to_string(),
+            video_path: path_string(&video_path),
+            metadata_path: path_string(&metadata_path),
+            note: String::new(),
+            git_branch: Some("securex-quota".to_string()),
+            started_at: Utc::now(),
+            ended_at: None,
+            duration_seconds: None,
+            size_bytes: None,
+            success: false,
+            transcript: None,
+            transcript_path: None,
+            transcription_status: "pending".to_string(),
+            transcription_error: None,
+            transcription_language: None,
+        };
+
+        discard_recording_artifacts(&recording);
+
+        assert!(!video_path.exists());
+        assert!(!metadata_path.exists());
+        assert!(!day.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn creates_safe_branch_folder_names() {
         assert_eq!(branch_folder_name("main"), "main");
         assert_eq!(
@@ -2054,6 +2436,131 @@ mod tests {
             "feature__oauth-flow"
         );
         assert_eq!(branch_folder_name("detached@a1b2c3d"), "detached-a1b2c3d");
+    }
+
+    #[test]
+    fn settings_round_trip_shortcut_and_cleanup_preferences() {
+        let root = std::env::temp_dir().join(format!(
+            "dicta-settings-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(read_settings(&root).shortcut_id, DEFAULT_SHORTCUT_ID);
+        assert!(read_settings(&root).cleanup_merged_videos);
+
+        let settings = AppSettings {
+            shortcut_id: "option_space".to_string(),
+            cleanup_merged_videos: false,
+        };
+        write_settings(&root, &settings).unwrap();
+        let restored = read_settings(&root);
+        assert_eq!(restored.shortcut_id, "option_space");
+        assert!(!restored.cleanup_merged_videos);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn merged_branch_cleanup_only_removes_videos() {
+        let root = std::env::temp_dir().join(format!(
+            "dicta-cleanup-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let repository = root.join("repository");
+        let library = root.join("library");
+        fs::create_dir_all(&library).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(&repository)
+            .status()
+            .unwrap()
+            .success());
+        for arguments in [
+            ["config", "user.email", "dicta@example.com"],
+            ["config", "user.name", "Dicta Tests"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .status()
+                .unwrap()
+                .success());
+        }
+        fs::write(repository.join("README.md"), "main").unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["add", "README.md"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["commit", "-m", "main"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["checkout", "-b", "feature/context"])
+            .status()
+            .unwrap()
+            .success());
+        fs::write(repository.join("feature.txt"), "feature").unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["add", "feature.txt"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["commit", "-m", "feature"])
+            .status()
+            .unwrap()
+            .success());
+
+        let branch_root = repository.join(".dicta/branches/feature__context");
+        write_branch_metadata(&branch_root, "feature/context", Some(&repository)).unwrap();
+        let day = branch_root.join("recordings/2026-08-13");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(day.join("packet.mp4"), vec![7_u8; 128]).unwrap();
+        fs::write(day.join("packet.transcript.md"), "keep me").unwrap();
+        fs::write(day.join("packet.json"), "{}").unwrap();
+
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["checkout", "main"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["merge", "--no-ff", "feature/context", "-m", "merge feature"])
+            .status()
+            .unwrap()
+            .success());
+
+        let project = ProjectFile {
+            id: "repository".to_string(),
+            name: "Repository".to_string(),
+            created_at: Utc::now(),
+            source_path: Some(path_string(&repository)),
+        };
+        let summary = cleanup_merged_videos_for_project(&library, &project).unwrap();
+        assert_eq!(summary.removed_files, 1);
+        assert_eq!(summary.freed_bytes, 128);
+        assert_eq!(summary.cleaned_branches, vec!["feature/context"]);
+        assert!(!day.join("packet.mp4").exists());
+        assert!(day.join("packet.transcript.md").is_file());
+        assert!(day.join("packet.json").is_file());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

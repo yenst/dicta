@@ -6,7 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import authThumb from "./assets/packet-auth.png";
 import webhookThumb from "./assets/packet-webhook.png";
 import retryThumb from "./assets/packet-retry.png";
-import type { Bootstrap, McpStatus, ModelDownloadEvent, ModelStatus, Project, RecorderEvent, Recording, Status } from "./types";
+import type { AppSettings, Bootstrap, CleanupSummary, McpStatus, ModelDownloadEvent, ModelStatus, Project, RecorderEvent, Recording, Status } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -28,7 +28,10 @@ let mockModelTimer: number | null = null;
 let mcpRestarting = false;
 let mcpStatus: McpStatus = { installed: false, codex_configured: false, executable_path: "", message: "Connect Dicta to Codex" };
 let activeView: "project" | "settings" = "project";
-let settingsSection: "appearance" | "transcription" = "appearance";
+let settingsSection: "appearance" | "shortcuts" | "transcription" | "storage" = "appearance";
+let appSettings: AppSettings = { shortcut_id: "command_shift_r", cleanup_merged_videos: true };
+let cleanupRunning = false;
+let cleanupSummary: CleanupSummary | null = null;
 type ThemePreference = "system" | "light" | "dark";
 const savedTheme = window.localStorage.getItem("dicta-theme");
 let themePreference: ThemePreference = savedTheme === "light" || savedTheme === "dark" ? savedTheme : "system";
@@ -134,6 +137,17 @@ const transcriptionLanguages = [
   { code: "es", label: "Spanish", native: "Español" },
 ];
 
+const shortcutOptions = [
+  { id: "command_shift_r", label: "⌘ ⇧ R", detail: "Default" },
+  { id: "command_shift_d", label: "⌘ ⇧ D", detail: "Dicta" },
+  { id: "option_space", label: "⌥ Space", detail: "Compact" },
+  { id: "control_space", label: "⌃ Space", detail: "Alternate" },
+];
+
+function shortcutLabel(): string {
+  return shortcutOptions.find((shortcut) => shortcut.id === appSettings.shortcut_id)?.label ?? "⌘ ⇧ R";
+}
+
 function statusCopy(): string {
   if (status.phase === "recording") return "Stop";
   if (status.phase === "preparing") return "Prepare";
@@ -200,7 +214,7 @@ function render(): void {
               <span class="record-symbol"><span></span></span>
               <span class="record-cta-copy"><strong id="record-label">${statusCopy()}</strong><small>${status.phase === "recording" ? "Capturing" : "Screen + audio"}</small></span>
             </span>
-            <span class="record-cta-meta">${status.phase === "recording" ? `<span class="record-time" id="record-time">${elapsed()}</span>` : ""}<kbd>⌘ ⇧ R</kbd></span>
+            <span class="record-cta-meta">${status.phase === "recording" ? `<span class="record-time" id="record-time">${elapsed()}</span>` : ""}<kbd>${escapeHtml(shortcutLabel())}</kbd></span>
           </button>
           ${status.last_error || project?.git_error ? `<div class="error-banner"><i class="ph ph-warning-circle"></i><span>${escapeHtml(status.last_error ?? project?.git_error ?? "")}</span></div>` : ""}
         </header>
@@ -273,8 +287,9 @@ function render(): void {
             <div class="settings-layout">
               <nav class="settings-nav" aria-label="Settings sections">
                 <button class="${settingsSection === "appearance" ? "selected" : ""}" data-settings-section="appearance"><i class="ph ph-palette"></i><span>Appearance</span></button>
+                <button class="${settingsSection === "shortcuts" ? "selected" : ""}" data-settings-section="shortcuts"><i class="ph ph-keyboard"></i><span>Shortcuts</span></button>
                 <button class="${settingsSection === "transcription" ? "selected" : ""}" data-settings-section="transcription"><i class="ph ph-waveform"></i><span>Transcription</span></button>
-                <button disabled><i class="ph ph-keyboard"></i><span>Shortcuts</span><small>Soon</small></button>
+                <button class="${settingsSection === "storage" ? "selected" : ""}" data-settings-section="storage"><i class="ph ph-hard-drives"></i><span>Storage</span></button>
               </nav>
 
               <div class="settings-content">
@@ -296,6 +311,25 @@ function render(): void {
                         </button>
                       `).join("")}
                     </div>
+                  </div>
+                </section>
+
+                <section class="settings-section-block" id="shortcuts-settings">
+                  <div class="settings-content-heading">
+                    <h2>Shortcuts</h2>
+                    <p>Choose the global shortcut that starts or stops a recording—even when Dicta is hidden.</p>
+                  </div>
+                  <div class="settings-group" aria-label="Recording shortcut">
+                    <div class="settings-group-label">Record</div>
+                    <div class="shortcut-options" role="radiogroup" aria-label="Record shortcut">
+                      ${shortcutOptions.map((shortcut) => `
+                        <button class="shortcut-option ${appSettings.shortcut_id === shortcut.id ? "selected" : ""}" type="button" data-shortcut-choice="${shortcut.id}" role="radio" aria-checked="${appSettings.shortcut_id === shortcut.id}">
+                          <span><strong>${escapeHtml(shortcut.label)}</strong><small>${escapeHtml(shortcut.detail)}</small></span>
+                          <i class="ph ${appSettings.shortcut_id === shortcut.id ? "ph-check-circle" : "ph-circle"}"></i>
+                        </button>
+                      `).join("")}
+                    </div>
+                    <p class="settings-help"><i class="ph ph-info"></i>Double-Fn is reserved by macOS and cannot be registered reliably; these combinations work globally.</p>
                   </div>
                 </section>
 
@@ -359,6 +393,25 @@ function render(): void {
                 </section>
 
                 <div class="privacy-note"><i class="ph ph-shield-check"></i><p><strong>Your recordings stay private.</strong> Dicta downloads the model directly, verifies it before installation, and transcribes locally.</p></div>
+                </section>
+
+                <section class="settings-section-block" id="storage-settings">
+                  <div class="settings-content-heading">
+                    <h2>Storage</h2>
+                    <p>Keep prompt context useful while removing large files after a branch has landed.</p>
+                  </div>
+                  <div class="settings-group" aria-label="Merged branch cleanup">
+                    <div class="settings-group-label">Cleanup</div>
+                    <article class="preference-row">
+                      <div class="preference-icon"><i class="ph ph-git-merge"></i></div>
+                      <div class="preference-copy"><strong>Merged videos</strong><p>Delete only video files after Git confirms their branch tip is merged into the default branch. Transcripts, notes, and metadata stay available to agents.</p></div>
+                      <button class="switch ${appSettings.cleanup_merged_videos ? "on" : ""}" type="button" id="cleanup-toggle" role="switch" aria-checked="${appSettings.cleanup_merged_videos}" aria-label="Clean merged branch videos"><span></span></button>
+                    </article>
+                    <div class="cleanup-action-row">
+                      <div>${cleanupSummary ? `<strong>${escapeHtml(cleanupSummary.message)}</strong><small>${cleanupSummary.freed_bytes > 0 ? `${formatBytes(cleanupSummary.freed_bytes)} freed · ` : ""}${cleanupSummary.cleaned_branches.length > 0 ? cleanupSummary.cleaned_branches.map(escapeHtml).join(", ") : "Checks the selected project"}</small>` : `<strong>Automatic</strong><small>Checked whenever Dicta refreshes a linked Git project.</small>`}</div>
+                      <button class="secondary-action" id="cleanup-now" ${!selectedProjectId || !appSettings.cleanup_merged_videos || cleanupRunning ? "disabled" : ""}><i class="ph ${cleanupRunning ? "ph-spinner-gap mcp-spin" : "ph-broom"}"></i>${cleanupRunning ? "Checking…" : "Clean"}</button>
+                    </div>
+                  </div>
                 </section>
               </div>
             </div>
@@ -475,13 +528,59 @@ function bindEvents(): void {
   });
   document.querySelector("#download-model")?.addEventListener("click", () => { void downloadQualityModel(); });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((button) => button.addEventListener("click", () => {
-    settingsSection = button.dataset.settingsSection === "transcription" ? "transcription" : "appearance";
+    const section = button.dataset.settingsSection;
+    settingsSection = section === "shortcuts" || section === "transcription" || section === "storage" ? section : "appearance";
     render();
     window.requestAnimationFrame(() => document.querySelector(`#${settingsSection}-settings`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => {
     setTheme((button.dataset.themeChoice ?? "system") as ThemePreference);
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-shortcut-choice]").forEach((button) => button.addEventListener("click", async () => {
+    const shortcutId = button.dataset.shortcutChoice;
+    if (!shortcutId || shortcutId === appSettings.shortcut_id) return;
+    try {
+      appSettings = isTauri
+        ? await invoke<AppSettings>("set_shortcut", { shortcutId })
+        : { ...appSettings, shortcut_id: shortcutId };
+      render();
+      showToast(`Shortcut set to ${shortcutLabel()}`);
+    } catch (error) {
+      status.last_error = String(error);
+      render();
+    }
+  }));
+  document.querySelector("#cleanup-toggle")?.addEventListener("click", async () => {
+    const enabled = !appSettings.cleanup_merged_videos;
+    try {
+      appSettings = isTauri
+        ? await invoke<AppSettings>("set_cleanup_merged_videos", { enabled })
+        : { ...appSettings, cleanup_merged_videos: enabled };
+      cleanupSummary = null;
+      render();
+      showToast(enabled ? "Cleanup enabled" : "Cleanup disabled");
+    } catch (error) {
+      status.last_error = String(error);
+      render();
+    }
+  });
+  document.querySelector("#cleanup-now")?.addEventListener("click", async () => {
+    if (!selectedProjectId || cleanupRunning) return;
+    cleanupRunning = true;
+    render();
+    try {
+      cleanupSummary = isTauri
+        ? await invoke<CleanupSummary>("cleanup_merged_videos", { projectId: selectedProjectId })
+        : { removed_files: 2, freed_bytes: 148_000_000, cleaned_branches: ["feature/oauth"], default_branch: "main", message: "Removed 2 merged videos." };
+      cleanupRunning = false;
+      render();
+      showToast(cleanupSummary.message);
+    } catch (error) {
+      cleanupRunning = false;
+      status.last_error = String(error);
+      render();
+    }
+  });
   document.querySelector("#create-project-form")?.addEventListener("click", stopPropagationOnModal);
   document.querySelector("#create-project-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -773,13 +872,15 @@ async function downloadQualityModel(): Promise<void> {
 
 async function initialize(): Promise<void> {
   if (isTauri) {
-    const [initial, initialMcpStatus, initialModelStatus] = await Promise.all([
+    const [initial, initialMcpStatus, initialModelStatus, initialAppSettings] = await Promise.all([
       invoke<Bootstrap>("bootstrap"),
       invoke<McpStatus>("mcp_status"),
       invoke<ModelStatus>("model_status"),
+      invoke<AppSettings>("get_app_settings"),
     ]);
     mcpStatus = initialMcpStatus;
     modelStatus = initialModelStatus;
+    appSettings = initialAppSettings;
     projects = initial.projects; status = initial.status;
     selectedProjectId = status.active_project_id ?? projects[0]?.id ?? null;
     if (selectedProjectId && selectedProjectId !== status.active_project_id) await invoke("select_project", { projectId: selectedProjectId });
@@ -789,9 +890,14 @@ async function initialize(): Promise<void> {
       if (["finished", "transcribed", "transcription_error", "error"].includes(payload.event)) {
         await refreshRecordings();
         const updated = await invoke<Bootstrap>("bootstrap"); projects = updated.projects;
-        if (payload.event === "finished") toastMessage = "Recording saved — transcribing now";
-        if (payload.event === "transcribed") toastMessage = "Transcript ready for agents";
-        if (payload.event === "transcription_error") toastMessage = payload.message;
+        if (payload.event === "finished") {
+          showToast("Recording saved — transcribing now");
+          return;
+        }
+        if (payload.event === "transcription_error") {
+          showToast(payload.message);
+          return;
+        }
       }
       render();
     });

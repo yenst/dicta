@@ -1,6 +1,6 @@
 [package]
 name = "dicta"
-version = "0.7.0"
+version = "0.8.0"
 description = "Capture screen and voice into prompt-ready project packets"
 authors = ["Dicta"]
 edition = "2021"

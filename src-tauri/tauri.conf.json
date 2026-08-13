@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Dicta",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "identifier": "com.dicta.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -47,6 +47,7 @@
     "shortDescription": "Record screen and voice as prompt context",
     "macOS": {
       "minimumSystemVersion": "15.0",
+      "signingIdentity": "-",
       "infoPlist": "Info.plist"
     }
   }

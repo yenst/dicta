@@ -73,6 +73,19 @@ export interface ModelDownloadEvent {
   message: string;
 }
 
+export interface AppSettings {
+  shortcut_id: string;
+  cleanup_merged_videos: boolean;
+}
+
+export interface CleanupSummary {
+  removed_files: number;
+  freed_bytes: number;
+  cleaned_branches: string[];
+  default_branch: string | null;
+  message: string;
+}
+
 export interface RecorderEvent {
   event: "preparing" | "started" | "stopping" | "finished" | "transcribing" | "transcribed" | "transcription_error" | "error";
   message: string;

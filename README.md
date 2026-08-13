@@ -6,8 +6,8 @@ Dicta is a macOS menu-bar app for recording screen + voice explanations into pro
 
 1. Link a Git working-copy folder or select an existing project.
 2. Add a short note describing what the model should learn.
-3. Press `⌘⇧R` to start recording the main display, microphone, and system audio.
-4. Press `⌘⇧R` again to stop.
+3. Use **Settings → Shortcuts** to choose a global shortcut, then press it to start recording the main display, microphone, and system audio.
+4. Press the shortcut again to stop.
 5. Use **Copy context** to copy a Markdown index containing the session notes and absolute artifact paths.
 
 Dicta reads the working copy's current branch whenever the app is focused, a project is selected, or recording starts. Linked-project recordings live inside the authorized Git workspace so Codex and other agents can read them without requesting access to an unrelated macOS folder:
@@ -17,6 +17,8 @@ Dicta reads the working copy's current branch whenever the app is focused, a pro
 ```
 
 Dicta adds `.dicta/` to the repository's local `.git/info/exclude`, so videos never appear in Git status or get committed. Each recording is an `.mp4` plus a `.json` sidecar. Branch names keep their exact value in metadata; `/` is encoded as `__` only in folder names (`feature/oauth` becomes `feature__oauth`). Changing Git branches switches the visible packet shelf and the recording destination.
+
+Merged-video cleanup is enabled by default in **Settings → Storage**. When Dicta refreshes a linked project, it uses Git ancestry to confirm that a recorded branch tip is contained in the repository's default branch, then removes only that branch's `.mp4` files. Transcripts, notes, and metadata remain available to MCP. The active and default branches are never cleaned.
 
 When a project is linked after upgrading, Dicta safely copies any existing packets from `~/Documents/Dicta/<project>` into `<repo>/.dicta` and rewrites their evidence paths. The original library is left intact.
 
@@ -61,10 +63,11 @@ The first recording asks for Microphone and Screen Recording permission. macOS m
 ## Current scope
 
 - Main display only
-- One configurable-in-code shortcut (`⌘⇧R`)
+- Four configurable global recording shortcuts
 - MP4 + metadata prompt packets
+- Automatic Git-verified video cleanup for merged branches
 - Downloadable high-quality local transcription model with progress and SHA-1 integrity verification
 - Manual transcription language selection; Dutch uses beam search plus a technical vocabulary prompt
 - Keyframe extraction is not implemented yet
 
-Double-tapping bare `Fn` needs a lower-level macOS event tap plus Accessibility/Input Monitoring permission. It is intentionally deferred until the core capture loop is validated.
+Double-tapping bare `Fn` needs a lower-level macOS event tap plus Accessibility/Input Monitoring permission. Dicta currently offers reliable Command, Option, and Control combinations instead.
