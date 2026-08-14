@@ -8,6 +8,9 @@ import type { AppSettings, Bootstrap, CleanupSummary, McpStatus, ModelDownloadEv
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const isTauri = "__TAURI_INTERNALS__" in window && !(import.meta.env.DEV && new URLSearchParams(window.location.search).has("demo"));
+const isMacPlatform = /Mac|iPhone|iPad/.test(navigator.platform);
+const platformName = isMacPlatform ? "Mac" : "Linux computer";
+const defaultShortcutId = isMacPlatform ? "command_shift_r" : "alt_shift_r";
 
 let projects: Project[] = [];
 let recordings: Recording[] = [];
@@ -25,6 +28,9 @@ let selectedTranscriptionLanguage = "auto";
 let sessionNote = "";
 let lastSessionNote = "";
 let viewingRecordingId: string | null = null;
+let viewerVideoBlobUrl: string | null = null;
+let viewerVideoBlobRecordingId: string | null = null;
+let viewerVideoBlobLoad: { recordingId: string; promise: Promise<string> } | null = null;
 let viewerTime = 0;
 let viewerPaused = true;
 let viewerMarkedTime = 0;
@@ -45,7 +51,7 @@ let mcpRestarting = false;
 let mcpStatus: McpStatus = { installed: false, codex_configured: false, executable_path: "", message: "Connect Dicta to Codex" };
 let activeView: "project" | "settings" = "project";
 let settingsSection: "appearance" | "shortcuts" | "transcription" | "storage" = "appearance";
-let appSettings: AppSettings = { shortcut_id: "command_shift_r", cleanup_merged_videos: true, transcription_language: "auto" };
+let appSettings: AppSettings = { shortcut_id: defaultShortcutId, cleanup_merged_videos: true, transcription_language: "auto" };
 let cleanupRunning = false;
 let cleanupSummary: CleanupSummary | null = null;
 type ThemePreference = "system" | "light" | "dark";
@@ -56,7 +62,9 @@ let modelDownload: ModelDownloadEvent | null = null;
 let modelStatus: ModelStatus = {
   bundled_ready: true,
   quality_installed: false,
-  quality_path: "~/Library/Application Support/Dicta/models/ggml-large-v3-turbo-q5_0.bin",
+  quality_path: isMacPlatform
+    ? "~/Library/Application Support/Dicta/models/ggml-large-v3-turbo-q5_0.bin"
+    : "~/.local/share/Dicta/models/ggml-large-v3-turbo-q5_0.bin",
   quality_size_bytes: 0,
   download_size_bytes: 547 * 1024 * 1024,
   active_model: "Compact · base",
@@ -211,14 +219,14 @@ const transcriptionLanguages = [
 ];
 
 const shortcutOptions = [
-  { id: "command_shift_r", label: "⌘ ⇧ R", detail: "Default" },
-  { id: "command_shift_d", label: "⌘ ⇧ D", detail: "Dicta" },
-  { id: "option_space", label: "⌥ Space", detail: "Compact" },
-  { id: "control_space", label: "⌃ Space", detail: "Alternate" },
+  { id: defaultShortcutId, label: isMacPlatform ? "⌘ ⇧ R" : "Alt Shift R", detail: "Default" },
+  { id: "command_shift_d", label: isMacPlatform ? "⌘ ⇧ D" : "Super Shift D", detail: "Dicta" },
+  { id: "option_space", label: isMacPlatform ? "⌥ Space" : "Alt Space", detail: "Compact" },
+  { id: "control_space", label: isMacPlatform ? "⌃ Space" : "Ctrl Space", detail: "Alternate" },
 ];
 
 function shortcutLabel(): string {
-  return shortcutOptions.find((shortcut) => shortcut.id === appSettings.shortcut_id)?.label ?? "⌘ ⇧ R";
+  return shortcutOptions.find((shortcut) => shortcut.id === appSettings.shortcut_id)?.label ?? shortcutOptions[0].label;
 }
 
 function statusCopy(): string {
@@ -411,7 +419,7 @@ function render(): void {
           <section class="settings-page" aria-labelledby="settings-title">
             <header class="settings-header">
               <div>
-                <span class="settings-eyebrow">Dicta on this Mac</span>
+                <span class="settings-eyebrow">Dicta on this ${platformName}</span>
                 <h1 id="settings-title">Settings</h1>
               </div>
               <button class="settings-close" id="close-settings" aria-label="Close settings"><i class="ph ph-x"></i></button>
@@ -429,13 +437,13 @@ function render(): void {
                 <section class="settings-section-block" id="appearance-settings">
                   <div class="settings-content-heading">
                     <h2>Appearance</h2>
-                    <p>Choose how Dicta looks on this Mac.</p>
+                    <p>Choose how Dicta looks on this ${platformName}.</p>
                   </div>
                   <div class="settings-group" aria-label="Theme">
                     <div class="settings-group-label">Theme</div>
                     <div class="theme-options" role="radiogroup" aria-label="Theme">
                       ${([
-                        ["system", "ph-desktop", "System", "Follow macOS"],
+                        ["system", "ph-desktop", "System", isMacPlatform ? "Follow macOS" : "Follow Linux"],
                         ["light", "ph-sun", "Light", "Always light"],
                         ["dark", "ph-moon-stars", "Dark", "Always dark"],
                       ] as const).map(([value, icon, label, detail]) => `
@@ -462,7 +470,7 @@ function render(): void {
                         </button>
                       `).join("")}
                     </div>
-                    <p class="settings-help"><i class="ph ph-info"></i>Double-Fn is reserved by macOS and cannot be registered reliably; these combinations work globally.</p>
+                    <p class="settings-help"><i class="ph ph-info"></i>${isMacPlatform ? "Double-Fn is reserved by macOS and cannot be registered reliably; these combinations work globally." : "Global shortcuts use Super, Alt, or Control and work while Dicta is in the background."}</p>
                   </div>
                 </section>
 
@@ -643,7 +651,10 @@ function render(): void {
     ${(() => {
       const viewing = recordings.find((recording) => recording.id === viewingRecordingId);
       if (!viewing) return "";
-      const video = mediaSrc(viewing.video_path);
+      const videoAsset = mediaSrc(viewing.video_path);
+      const video = !isMacPlatform && viewerVideoBlobRecordingId === viewing.id
+        ? viewerVideoBlobUrl
+        : isMacPlatform ? videoAsset : null;
       const poster = mediaSrc(viewing.poster_path);
       const duration = Math.max(0, viewing.duration_seconds ?? 0);
       const timelineNotes = viewing.timeline_notes ?? [];
@@ -664,7 +675,7 @@ function render(): void {
         <div class="review-body">
           <div class="review-stage">
             <div class="viewer-media">
-              ${video ? `<video id="packet-video" preload="metadata" playsinline${poster ? ` poster="${escapeHtml(poster)}"` : ""} src="${escapeHtml(video)}"></video><div class="viewer-playback-error" id="viewer-playback-error" role="alert" hidden><i class="ph ph-warning-circle"></i><span>Video playback is unavailable.</span></div>` : `<div class="viewer-missing"><i class="ph ph-video-camera-slash"></i><span>Video file is missing.</span></div>`}
+              ${videoAsset ? `<video id="packet-video" preload="metadata" playsinline${poster ? ` poster="${escapeHtml(poster)}"` : ""}>${video ? `<source src="${escapeHtml(video)}" type="video/mp4">` : ""}</video><div class="viewer-playback-error" id="viewer-playback-error" role="alert" hidden><i class="ph ph-warning-circle"></i><span>Video playback is unavailable.</span></div>` : `<div class="viewer-missing"><i class="ph ph-video-camera-slash"></i><span>Video file is missing.</span></div>`}
             </div>
             <div class="review-controls">
               <div class="review-control-row">
@@ -794,8 +805,62 @@ function restoreViewer(): void {
   video.addEventListener("error", () => {
     viewerPaused = true;
     updatePlayButton();
-    showPlaybackError("This recording could not be loaded.");
+    const mediaError = video.error;
+    showPlaybackError(mediaError?.message
+      ? `This recording could not be loaded: ${mediaError.message}`
+      : "This recording could not be loaded.");
   });
+  const viewing = recordings.find((recording) => recording.id === viewingRecordingId);
+  if (!isMacPlatform && viewing) void loadLinuxViewerVideo(viewing, showPlaybackError);
+}
+
+function releaseViewerVideoBlob(): void {
+  if (viewerVideoBlobUrl) URL.revokeObjectURL(viewerVideoBlobUrl);
+  viewerVideoBlobUrl = null;
+  viewerVideoBlobRecordingId = null;
+}
+
+async function loadLinuxViewerVideo(recording: Recording, showPlaybackError: (message: string) => void): Promise<void> {
+  if (viewerVideoBlobRecordingId === recording.id && viewerVideoBlobUrl) return;
+  if (!viewerVideoBlobLoad || viewerVideoBlobLoad.recordingId !== recording.id) {
+    const promise = fetch(mediaSrc(recording.video_path)).then(async (response) => {
+      if (!response.ok) throw new Error(`media request returned ${response.status}`);
+      const blob = await response.blob();
+      return URL.createObjectURL(blob.type === "video/mp4" ? blob : new Blob([blob], { type: "video/mp4" }));
+    });
+    viewerVideoBlobLoad = { recordingId: recording.id, promise };
+  }
+
+  const activeLoad = viewerVideoBlobLoad;
+  try {
+    const url = await activeLoad.promise;
+    if (viewingRecordingId !== recording.id) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    if (viewerVideoBlobRecordingId === recording.id && viewerVideoBlobUrl) {
+      const video = document.querySelector<HTMLVideoElement>("#packet-video");
+      if (video && video.currentSrc !== viewerVideoBlobUrl) {
+        video.replaceChildren();
+        video.src = viewerVideoBlobUrl;
+        video.load();
+      }
+      return;
+    }
+    releaseViewerVideoBlob();
+    viewerVideoBlobUrl = url;
+    viewerVideoBlobRecordingId = recording.id;
+    const video = document.querySelector<HTMLVideoElement>("#packet-video");
+    if (video) {
+      video.replaceChildren();
+      video.src = url;
+      video.load();
+    }
+  } catch (error) {
+    showPlaybackError(`This recording could not be loaded: ${String(error)}`);
+  } finally {
+    if (viewerVideoBlobLoad === activeLoad) viewerVideoBlobLoad = null;
+  }
 }
 
 async function playViewerVideo(video: HTMLVideoElement): Promise<void> {
@@ -816,6 +881,7 @@ async function playViewerVideo(video: HTMLVideoElement): Promise<void> {
 }
 
 function openPacket(recordingId: string): void {
+  if (viewerVideoBlobRecordingId !== recordingId) releaseViewerVideoBlob();
   viewingRecordingId = recordingId;
   viewerTime = 0;
   viewerPaused = true;
@@ -838,6 +904,7 @@ function closePacketViewer(): void {
   activeVoiceStream = null;
   viewerListening = false;
   viewerVoiceProcessing = false;
+  releaseViewerVideoBlob();
   viewingRecordingId = null;
   viewerTime = 0;
   viewerPaused = true;
@@ -1215,7 +1282,7 @@ function bindEvents(): void {
       if (mcpRestarting) render();
       mcpStatus = isTauri
         ? await invoke<McpStatus>(mcpStatus.codex_configured ? "restart_codex_mcp" : "configure_codex_mcp")
-        : { installed: true, codex_configured: true, executable_path: "/Library/Application Support/Dicta/bin/dicta-mcp", message: mcpRestarting ? "Dicta MCP restarted." : "Dicta is connected." };
+        : { installed: true, codex_configured: true, executable_path: isMacPlatform ? "/Library/Application Support/Dicta/bin/dicta-mcp" : "~/.local/share/Dicta/bin/dicta-mcp", message: mcpRestarting ? "Dicta MCP restarted." : "Dicta is connected." };
       mcpRestarting = false;
       render();
       showToast(mcpStatus.message);
@@ -1452,7 +1519,12 @@ async function reveal(path?: string): Promise<void> {
 
 async function startRecording(note: string): Promise<void> {
   try {
-    if (isTauri) status = await invoke<Status>("start_recording", { note });
+    if (isTauri) {
+      const startedStatus = await invoke<Status>("start_recording", { note });
+      // Native capture may emit `started` before this invoke resolves. Never
+      // replace that newer event state with an older `preparing` response.
+      if (status.phase !== "recording" || startedStatus.phase === "recording") status = startedStatus;
+    }
     else {
       status = { phase: "recording", active_project_id: selectedProjectId, active_video_path: "/mock/recording.mp4", started_at: new Date().toISOString(), last_error: null };
     }

@@ -34,6 +34,9 @@ const QUALITY_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 const QUALITY_MODEL_SHA1: &str = "e050f7970618a659205450ad97eb95a18d69c9ee";
 const QUALITY_MODEL_DOWNLOAD_BYTES: u64 = 547 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const DEFAULT_SHORTCUT_ID: &str = "alt_shift_r";
+#[cfg(not(target_os = "linux"))]
 const DEFAULT_SHORTCUT_ID: &str = "command_shift_r";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -279,6 +282,10 @@ fn is_allowed_language(language: &str) -> bool {
 }
 
 fn normalize_settings(mut settings: AppSettings) -> AppSettings {
+    #[cfg(target_os = "linux")]
+    if settings.shortcut_id == "command_shift_r" {
+        settings.shortcut_id = DEFAULT_SHORTCUT_ID.to_string();
+    }
     if shortcut_for_id(&settings.shortcut_id).is_none() {
         settings.shortcut_id = default_shortcut_id();
     }
@@ -317,6 +324,10 @@ fn shortcut_for_id(id: &str) -> Option<Shortcut> {
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyR,
         )),
+        "alt_shift_r" => Some(Shortcut::new(
+            Some(Modifiers::ALT | Modifiers::SHIFT),
+            Code::KeyR,
+        )),
         "command_shift_d" => Some(Shortcut::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyD,
@@ -332,8 +343,8 @@ fn path_string(path: &Path) -> String {
 }
 
 fn models_dir() -> Result<PathBuf, String> {
-    let data_dir =
-        dirs::data_local_dir().ok_or_else(|| "Could not locate Application Support".to_string())?;
+    let data_dir = dirs::data_local_dir()
+        .ok_or_else(|| "Could not locate the local application data folder".to_string())?;
     Ok(data_dir.join("Dicta").join("models"))
 }
 
@@ -407,7 +418,7 @@ fn current_model_status(app: &AppHandle) -> Result<ModelStatus, String> {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.contains("large-v3-turbo"))
         {
-            "Dicta is using a high-quality model found on this Mac. Install a Dicta-managed copy for a portable setup.".to_string()
+            "Dicta is using a high-quality model found on this computer. Install a Dicta-managed copy for a portable setup.".to_string()
         } else {
             "The compact offline model is active. Download high quality for better Dutch and technical speech.".to_string()
         },
@@ -466,7 +477,7 @@ async fn download_quality_model(app: AppHandle) -> Result<ModelStatus, String> {
             "downloading",
             "Downloading the high-quality model…",
         );
-        let mut child = std::process::Command::new("/usr/bin/curl")
+        let mut child = std::process::Command::new("curl")
             .args([
                 "--location",
                 "--fail",
@@ -532,8 +543,14 @@ async fn download_quality_model(app: AppHandle) -> Result<ModelStatus, String> {
             "verifying",
             "Verifying the model…",
         );
-        let checksum = std::process::Command::new("/usr/bin/shasum")
+        #[cfg(target_os = "macos")]
+        let checksum = std::process::Command::new("shasum")
             .args(["-a", "1"])
+            .arg(&staging)
+            .output()
+            .map_err(|error| format!("Could not verify the downloaded model: {error}"))?;
+        #[cfg(not(target_os = "macos"))]
+        let checksum = std::process::Command::new("sha1sum")
             .arg(&staging)
             .output()
             .map_err(|error| format!("Could not verify the downloaded model: {error}"))?;
@@ -572,8 +589,8 @@ async fn download_quality_model(app: AppHandle) -> Result<ModelStatus, String> {
 }
 
 fn mcp_install_path() -> Result<PathBuf, String> {
-    let data_dir =
-        dirs::data_local_dir().ok_or_else(|| "Could not locate Application Support".to_string())?;
+    let data_dir = dirs::data_local_dir()
+        .ok_or_else(|| "Could not locate the local application data folder".to_string())?;
     Ok(data_dir.join("Dicta").join("bin").join("dicta-mcp"))
 }
 
@@ -1829,9 +1846,19 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
         status.clone(),
     );
 
-    platform::start_recording(&video_path_string, native_recorder_callback)?;
+    if let Err(error) = platform::start_recording(&video_path_string, native_recorder_callback) {
+        let (status, _) = finalize_session(app, Some(error.clone()));
+        emit_recorder_event(app, "error", &error, status);
+        return Err(error);
+    }
 
-    Ok(status)
+    let current_status = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .status
+        .clone();
+    Ok(current_status)
 }
 
 #[tauri::command]
@@ -1867,14 +1894,28 @@ fn reveal_path(path: String) -> Result<(), String> {
     if !target.exists() {
         return Err(format!("Path does not exist: {path}"));
     }
-    let mut command = std::process::Command::new("open");
-    if target.is_file() {
-        command.arg("-R");
-    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        if target.is_file() {
+            command.arg("-R");
+        }
+        command.arg(&target);
+        command
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(if target.is_file() {
+            target.parent().unwrap_or(&target)
+        } else {
+            &target
+        });
+        command
+    };
     command
-        .arg(target)
         .spawn()
-        .map_err(|error| format!("Could not open Finder: {error}"))?;
+        .map_err(|error| format!("Could not open the file manager: {error}"))?;
     Ok(())
 }
 
@@ -1936,16 +1977,48 @@ fn build_context(project_id: String, state: State<'_, AppState>) -> Result<Strin
 
 #[tauri::command]
 fn copy_to_clipboard(text: String) -> Result<(), String> {
-    let mut child = std::process::Command::new("pbcopy")
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("pbcopy");
+    #[cfg(all(target_os = "linux", not(target_os = "macos")))]
+    let mut command = {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let has = |name: &str| {
+            std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path).any(|directory| directory.join(name).is_file())
+            })
+        };
+        if wayland && has("wl-copy") {
+            std::process::Command::new("wl-copy")
+        } else if has("xclip") {
+            let mut command = std::process::Command::new("xclip");
+            command.args(["-selection", "clipboard"]);
+            command
+        } else if has("xsel") {
+            let mut command = std::process::Command::new("xsel");
+            command.args(["--clipboard", "--input"]);
+            command
+        } else {
+            return Err(
+                "Clipboard support requires `wl-clipboard`, `xclip`, or `xsel` on Linux"
+                    .to_string(),
+            );
+        }
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return Err("Clipboard support is unavailable on this platform".to_string());
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let mut child = command
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| format!("Could not access the clipboard: {error}"))?;
-    child
+    let mut stdin = child
         .stdin
-        .as_mut()
-        .ok_or_else(|| "Could not open the clipboard".to_string())?
+        .take()
+        .ok_or_else(|| "Could not open the clipboard".to_string())?;
+    stdin
         .write_all(text.as_bytes())
         .map_err(|error| format!("Could not write to the clipboard: {error}"))?;
+    drop(stdin);
     let status = child
         .wait()
         .map_err(|error| format!("Clipboard command failed: {error}"))?;
@@ -2761,8 +2834,11 @@ pub fn run() {
             let _ = install_mcp_binary(app.handle());
             let root = app.state::<AppState>().root.clone();
             queue_pending_transcriptions(&root);
+            #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
-            app.global_shortcut().register(shortcut.clone())?;
+            if let Err(error) = app.global_shortcut().register(shortcut.clone()) {
+                eprintln!("Dicta could not register its global shortcut: {error}");
+            }
 
             let show = MenuItem::with_id(app, "show", "Show Dicta", true, None::<&str>)?;
             let record =
@@ -3033,6 +3109,17 @@ mod tests {
         assert!(!restored.cleanup_merged_videos);
         assert_eq!(restored.transcription_language, "en");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn migrates_the_macos_default_shortcut_on_linux() {
+        let settings = normalize_settings(AppSettings {
+            shortcut_id: "command_shift_r".to_string(),
+            cleanup_merged_videos: true,
+            transcription_language: "auto".to_string(),
+        });
+        assert_eq!(settings.shortcut_id, "alt_shift_r");
     }
 
     #[test]

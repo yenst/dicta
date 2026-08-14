@@ -8,6 +8,7 @@
     "build:web": "tsc && vite build",
     "build:mcp": "cargo build --release --manifest-path mcp/Cargo.toml",
     "build": "npm run build:web && npm run build:mcp",
+    "bundle:linux": "bash scripts/package-linux.sh",
     "tauri": "tauri",
     "check": "tsc --noEmit"
   },
