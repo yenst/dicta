@@ -28,11 +28,18 @@ export interface Recording {
   success: boolean;
   transcript: string | null;
   transcript_path: string | null;
+  transcript_segments: TranscriptSegment[];
   transcription_status: "pending" | "processing" | "complete" | "failed" | "";
   transcription_error: string | null;
   transcription_language: string | null;
   poster_path: string | null;
   timeline_notes: TimelineNote[];
+}
+
+export interface TranscriptSegment {
+  start_seconds: number;
+  end_seconds: number;
+  text: string;
 }
 
 export interface TimelineNote {

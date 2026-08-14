@@ -1,5 +1,6 @@
 import "@phosphor-icons/web/regular";
 import "./style.css";
+import dictaAppIconUrl from "../src-tauri/icons/icon.png";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -140,6 +141,28 @@ function formatDate(value: string): string {
   return sameDay ? `Today, ${time}` : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
 }
 
+function recordingDayHeading(value: string): string {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const prefix = date.toDateString() === today.toDateString()
+    ? "Today"
+    : date.toDateString() === yesterday.toDateString()
+      ? "Yesterday"
+      : new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(date);
+  const calendarDate = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(date);
+  return `${prefix} — ${calendarDate}`;
+}
+
+function headerClock(): { date: string; time: string } {
+  const now = new Date();
+  return {
+    date: new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(now),
+    time: new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }).format(now),
+  };
+}
+
 function activeProject(): Project | undefined {
   return projects.find((project) => project.id === selectedProjectId);
 }
@@ -228,11 +251,25 @@ function render(): void {
   const buttonDisabled = !project || branchUnavailable || status.phase === "preparing" || status.phase === "stopping";
   const recordingToDelete = recordings.find((recording) => recording.id === deleteRecordingId);
   const projectToRemove = projects.find((item) => item.id === removeProjectId);
+  const latestRecording = recordings[0];
+  const clock = headerClock();
+  const recordingGroups = recordings.reduce<Array<{ key: string; label: string; items: Recording[] }>>((groups, recording) => {
+    const key = new Date(recording.started_at).toDateString();
+    const existing = groups.find((group) => group.key === key);
+    if (existing) existing.items.push(recording);
+    else groups.push({ key, label: recordingDayHeading(recording.started_at), items: [recording] });
+    return groups;
+  }, []);
 
   app.innerHTML = `
     <main class="app-shell">
       <aside class="sidebar">
-        <div class="sidebar-title">Projects</div>
+        <div class="sidebar-chrome-space" data-tauri-drag-region></div>
+        <div class="sidebar-brand" data-tauri-drag-region>
+          <img src="${dictaAppIconUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+          <strong data-tauri-drag-region>Dicta</strong>
+        </div>
+        <div class="sidebar-section-label">Projects</div>
         <nav class="project-list" aria-label="Projects">
           ${projects.length === 0 ? `<div class="sidebar-empty">No projects yet</div>` : projects.map((item) => `
             <div class="project-entry ${openProjectMenu === item.id ? "menu-open" : ""}">
@@ -251,6 +288,20 @@ function render(): void {
             </div>
           `).join("")}
         </nav>
+        <section class="sidebar-recents" aria-labelledby="recents-title">
+          <div class="sidebar-section-label" id="recents-title">Recents</div>
+          ${latestRecording ? `
+            <button class="recent-item" data-open-packet="${escapeHtml(latestRecording.id)}" title="Open ${escapeHtml(latestRecording.note || "recent recording")}">
+              <i class="ph ph-clock" aria-hidden="true"></i>
+              <span>${escapeHtml(latestRecording.note || "Untitled recording")}</span>
+            </button>
+          ` : `
+            <div class="recent-item recent-item-empty">
+              <i class="ph ph-clock" aria-hidden="true"></i>
+              <span>No recent recordings</span>
+            </div>
+          `}
+        </section>
         <div class="sidebar-actions">
           <button class="add-project" id="new-project" ${isBusy ? "disabled" : ""}>
             <i class="ph ph-folder-plus" aria-hidden="true"></i><span>Link project folder</span>
@@ -262,9 +313,9 @@ function render(): void {
       </aside>
 
       <section class="workspace">
-        <header class="project-header">
-          <div class="project-heading">
-            <h1>${escapeHtml(project?.name ?? "Choose a project")}</h1>
+        <header class="project-header" data-tauri-drag-region>
+          <div class="project-heading" data-tauri-drag-region>
+            <h1 data-tauri-drag-region>${escapeHtml(project?.name ?? "Choose a project")}</h1>
             <div class="project-context">
               <button class="path-button" id="copy-path" ${project ? "" : "disabled"} title="Copy working-copy path">
                 <i class="ph ph-folder" aria-hidden="true"></i>
@@ -274,19 +325,15 @@ function render(): void {
               ${project ? `<button class="branch-pill ${branchUnavailable ? "unavailable" : ""}" id="refresh-branch" title="Refresh current Git branch"><i class="ph ph-git-branch"></i><span>${escapeHtml(project.git_branch ?? "Git unavailable")}</span><i class="ph ph-arrows-clockwise refresh-icon"></i></button>` : ""}
             </div>
           </div>
-          <button class="record-cta ${isBusy ? "active" : ""}" id="record-toggle" ${buttonDisabled ? "disabled" : ""}>
-            <span class="record-cta-main">
-              <span class="record-symbol"><span></span></span>
-              <span class="record-cta-copy"><strong id="record-label">${statusCopy()}</strong><small>${status.phase === "recording" ? "Capturing" : "Screen + audio"}</small></span>
-            </span>
-            <span class="record-cta-meta">${status.phase === "recording" ? `<span class="record-time" id="record-time">${elapsed()}</span>` : ""}<kbd>${escapeHtml(shortcutLabel())}</kbd></span>
-          </button>
+          <div class="header-clock" aria-label="${escapeHtml(`${clock.date}, ${clock.time}`)}" data-tauri-drag-region>
+            <span data-tauri-drag-region>${escapeHtml(clock.date)}</span><strong data-tauri-drag-region>${escapeHtml(clock.time)}</strong>
+          </div>
           ${status.last_error || project?.git_error ? `<div class="error-banner"><i class="ph ph-warning-circle"></i><span>${escapeHtml(status.last_error ?? project?.git_error ?? "")}</span></div>` : ""}
         </header>
 
         <section class="packet-section" data-project-id="${escapeHtml(selectedProjectId ?? "")}">
           <div class="packet-title-row">
-            <div><h2>Prompt packets</h2><p>${recordings.length} recording${recordings.length === 1 ? "" : "s"}</p></div>
+            <div class="packet-title-copy"><i class="ph ph-stack" aria-hidden="true"></i><h2>Prompt packets</h2><p>${recordings.length} recording${recordings.length === 1 ? "" : "s"}</p></div>
           </div>
           <div class="packet-table" role="table" aria-label="Prompt packets">
             <div class="packet-head" role="row">
@@ -300,42 +347,57 @@ function render(): void {
                   <p>Record your screen and voice. This packet will be saved only for ${escapeHtml(project?.git_branch ?? "the current Git branch")}.</p>
                   <button id="empty-record" ${buttonDisabled ? "disabled" : ""}>Record</button>
                 </div>
-              ` : recordings.map((recording) => {
-                const packet = packetStatus(recording);
-                const poster = mediaSrc(recording.poster_path);
-                const excerpt = transcriptExcerpt(recording);
-                return `
-                <div class="packet-row" role="row" data-recording-id="${escapeHtml(recording.id)}">
-                  <button class="thumbnail-button" data-open-packet="${escapeHtml(recording.id)}" aria-label="Play ${escapeHtml(recording.note || "recording")}">
-                    ${poster ? `<img src="${escapeHtml(poster)}" alt="" />` : `<span class="thumbnail-fallback"><i class="ph ph-monitor-play" aria-hidden="true"></i></span>`}
-                    <span class="play-overlay"><i class="ph ph-play" aria-hidden="true"></i></span>
-                  </button>
-                  <button class="packet-name" data-open-packet="${escapeHtml(recording.id)}">
-                    <strong>${escapeHtml(recording.note || "Untitled recording")}</strong>
-                    ${excerpt ? `<small>${escapeHtml(excerpt)}</small>` : recording.transcription_status === "complete" ? "" : `<small>${escapeHtml(packet.title)}</small>`}
-                  </button>
-                  <span class="packet-meta">${formatDuration(recording.duration_seconds)}</span>
-                  <span class="packet-meta">${formatDate(recording.started_at)}</span>
-                  <span><span class="status-chip ${packet.className}" title="${escapeHtml(packet.title)}"><i class="ph ${packet.icon}"></i>${packet.label}</span></span>
-                  <div class="menu-cell">
-                    <button class="more-button" data-menu="${escapeHtml(recording.id)}" aria-label="More actions"><i class="ph ph-dots-three"></i></button>
-                    ${openPacketMenu === recording.id ? `
-                      <div class="packet-menu">
-                        <button data-open-packet="${escapeHtml(recording.id)}"><i class="ph ph-play"></i>Open</button>
-                        <button data-transcribe="${escapeHtml(recording.id)}" ${recording.success ? "" : "disabled"}><i class="ph ph-waveform"></i>Transcribe</button>
-                        <span class="packet-menu-divider"></span>
-                        <button data-reveal="${escapeHtml(recording.video_path)}"><i class="ph ph-folder-open"></i>Reveal</button>
-                        <button data-copy-video="${escapeHtml(recording.video_path)}"><i class="ph ph-copy"></i>Copy path</button>
-                        <span class="packet-menu-divider"></span>
-                        <button class="danger" data-delete="${escapeHtml(recording.id)}"><i class="ph ph-trash"></i>Delete</button>
-                      </div>
-                    ` : ""}
-                  </div>
-                </div>`;
-              }).join("")}
+              ` : recordingGroups.map((group) => `
+                <div class="packet-group-heading"><span>${escapeHtml(group.label)}</span><i aria-hidden="true"></i></div>
+                ${group.items.map((recording) => {
+                  const packet = packetStatus(recording);
+                  const poster = mediaSrc(recording.poster_path);
+                  const excerpt = transcriptExcerpt(recording);
+                  return `
+                  <div class="packet-row" role="row" data-recording-id="${escapeHtml(recording.id)}">
+                    <button class="thumbnail-button" data-open-packet="${escapeHtml(recording.id)}" aria-label="Play ${escapeHtml(recording.note || "recording")}">
+                      ${poster ? `<img src="${escapeHtml(poster)}" alt="" />` : `<span class="thumbnail-fallback"><i class="ph ph-monitor-play" aria-hidden="true"></i></span>`}
+                      <span class="play-overlay"><i class="ph ph-play" aria-hidden="true"></i></span>
+                    </button>
+                    <button class="packet-name" data-open-packet="${escapeHtml(recording.id)}">
+                      <strong>${escapeHtml(recording.note || "Untitled recording")}</strong>
+                      ${excerpt ? `<small>${escapeHtml(excerpt)}</small>` : recording.transcription_status === "complete" ? "" : `<small>${escapeHtml(packet.title)}</small>`}
+                    </button>
+                    <span class="packet-meta">${formatDuration(recording.duration_seconds)}</span>
+                    <span class="packet-meta">${formatDate(recording.started_at)}</span>
+                    <span><span class="status-chip ${packet.className}" title="${escapeHtml(packet.title)}"><i class="ph ${packet.icon}"></i>${packet.label}</span></span>
+                    <div class="menu-cell">
+                      <button class="more-button" data-menu="${escapeHtml(recording.id)}" aria-label="More actions"><i class="ph ph-dots-three"></i></button>
+                      ${openPacketMenu === recording.id ? `
+                        <div class="packet-menu">
+                          <button data-open-packet="${escapeHtml(recording.id)}"><i class="ph ph-play"></i>Open</button>
+                          <button data-transcribe="${escapeHtml(recording.id)}" ${recording.success ? "" : "disabled"}><i class="ph ph-waveform"></i>Transcribe</button>
+                          <span class="packet-menu-divider"></span>
+                          <button data-reveal="${escapeHtml(recording.video_path)}"><i class="ph ph-folder-open"></i>Reveal</button>
+                          <button data-copy-video="${escapeHtml(recording.video_path)}"><i class="ph ph-copy"></i>Copy path</button>
+                          <span class="packet-menu-divider"></span>
+                          <button class="danger" data-delete="${escapeHtml(recording.id)}"><i class="ph ph-trash"></i>Delete</button>
+                        </div>
+                      ` : ""}
+                    </div>
+                  </div>`;
+                }).join("")}
+              `).join("")}
             </div>
           </div>
         </section>
+
+        <div class="floating-record-zone">
+          ${status.phase === "recording" ? `<span class="recording-live-time" id="record-time">${elapsed()}</span>` : ""}
+          <div class="floating-record ${isBusy ? "is-busy" : ""} ${status.phase === "recording" ? "is-recording" : ""} ${buttonDisabled ? "is-disabled" : ""}">
+            <span class="access-light access-light-mic is-ready" role="status" aria-label="Microphone access ready" title="Microphone access ready"></span>
+            <button class="floating-record-button" id="record-toggle" type="button" aria-label="${status.phase === "recording" ? "Stop recording" : "Start screen and audio recording"}" title="${statusCopy()} · ${escapeHtml(shortcutLabel())}" ${buttonDisabled ? "disabled" : ""}>
+              <span class="record-button-mark" aria-hidden="true"></span>
+            </button>
+            <span class="access-light access-light-folder ${project ? "is-ready" : "is-waiting"}" role="status" aria-label="${project ? "Project folder access ready" : "Link a project folder to record"}" title="${project ? "Project folder access ready" : "Link a project folder to record"}"></span>
+            <button class="capture-options" id="record-options" type="button" aria-label="Open recording options" title="Recording options" ${buttonDisabled || status.phase === "recording" ? "disabled" : ""}><i class="ph ph-caret-down" aria-hidden="true"></i></button>
+          </div>
+        </div>
 
         <footer class="workspace-footer">
           <button class="footer-button" id="copy-context" ${recordings.length === 0 ? "disabled" : ""}><i class="ph ph-copy"></i>Context</button>
@@ -651,8 +713,14 @@ function render(): void {
                 </div>
               </div>` : `
               <div class="viewer-transcript">
-                ${viewing.transcript?.trim()
-                  ? `<pre>${escapeHtml(viewing.transcript)}</pre>`
+                ${viewing.transcript_segments?.length
+                  ? `<div class="transcript-segments">${viewing.transcript_segments.map((segment) => `
+                      <article class="transcript-segment">
+                        <button type="button" data-transcript-time="${segment.start_seconds}" title="Jump to ${formatViewerTime(segment.start_seconds)}"><i class="ph ph-play"></i>${formatViewerTime(segment.start_seconds)}</button>
+                        <div><p>${escapeHtml(segment.text)}</p><small>${formatViewerTime(segment.start_seconds)}–${formatViewerTime(segment.end_seconds)}</small></div>
+                      </article>`).join("")}</div>`
+                  : viewing.transcript?.trim()
+                    ? `<pre>${escapeHtml(viewing.transcript)}</pre><p class="legacy-transcript-note">Retranscribe this recording to add exact timestamps.</p>`
                   : `<div class="notes-empty"><i class="ph ph-waveform"></i><strong>No transcript yet</strong><p>${escapeHtml(viewing.transcription_error || (viewing.transcription_status === "processing" ? "The transcript is still being written." : "Transcribe this recording to read it here."))}</p></div>`}
               </div>`}
           </aside>
@@ -1110,6 +1178,7 @@ function bindEvents(): void {
   document.querySelector("#record-toggle")?.addEventListener("click", async () => {
     if (status.phase === "recording") await stopRecording(); else openStart();
   });
+  document.querySelector("#record-options")?.addEventListener("click", openStart);
   document.querySelector("#start-recording-form")?.addEventListener("click", stopPropagationOnModal);
   document.querySelector<HTMLTextAreaElement>("#session-note")?.addEventListener("input", (event) => {
     sessionNote = (event.target as HTMLTextAreaElement).value;
@@ -1191,6 +1260,12 @@ function bindEvents(): void {
     const video = document.querySelector<HTMLVideoElement>("#packet-video");
     if (!video) return;
     video.currentTime = Number(button.dataset.noteTime ?? 0);
+    void playViewerVideo(video);
+  }));
+  document.querySelectorAll<HTMLButtonElement>("button[data-transcript-time]").forEach((button) => button.addEventListener("click", () => {
+    const video = document.querySelector<HTMLVideoElement>("#packet-video");
+    if (!video) return;
+    video.currentTime = Number(button.dataset.transcriptTime ?? 0);
     void playViewerVideo(video);
   }));
   document.querySelector("#mark-timestamp")?.addEventListener("click", () => {
@@ -1395,7 +1470,7 @@ async function stopRecording(): Promise<void> {
       status.phase = "stopping"; render();
       mockTimer = window.setTimeout(() => {
         const now = new Date().toISOString();
-        recordings = [{ id: `demo-${Date.now()}`, project_id: selectedProjectId!, video_path: "/mock/new-packet.mp4", metadata_path: "/mock/new-packet.json", note: "New prompt packet", git_branch: activeProject()?.git_branch ?? null, started_at: status.started_at ?? now, ended_at: now, duration_seconds: 138, size_bytes: 18_400_000, success: true, transcript: "New prompt packet transcript", transcript_path: "/mock/new-packet.transcript.md", transcription_status: "complete", transcription_error: null, transcription_language: appSettings.transcription_language, poster_path: null, timeline_notes: [] }, ...recordings];
+        recordings = [{ id: `demo-${Date.now()}`, project_id: selectedProjectId!, video_path: "/mock/new-packet.mp4", metadata_path: "/mock/new-packet.json", note: "New prompt packet", git_branch: activeProject()?.git_branch ?? null, started_at: status.started_at ?? now, ended_at: now, duration_seconds: 138, size_bytes: 18_400_000, success: true, transcript: "New prompt packet transcript", transcript_path: "/mock/new-packet.transcript.md", transcript_segments: [{ start_seconds: 0, end_seconds: 3.2, text: "New prompt packet transcript" }], transcription_status: "complete", transcription_error: null, transcription_language: appSettings.transcription_language, poster_path: null, timeline_notes: [] }, ...recordings];
         status = { ...emptyStatus(), active_project_id: selectedProjectId };
         showToast("Prompt packet created");
       }, 900);
@@ -1429,7 +1504,7 @@ function mockCreateProject(name: string): Project {
 function mockRecordings(projectId: string | null): Recording[] {
   if (projectId !== "api-integration") return [];
   const base = new Date();
-  const item = (id: string, note: string, seconds: number, hourOffset: number, success = true): Recording => ({ id, project_id: projectId, video_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.mp4`, metadata_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.json`, note, git_branch: "feature/oauth", started_at: new Date(base.getTime() - hourOffset * 3_600_000).toISOString(), ended_at: base.toISOString(), duration_seconds: seconds, size_bytes: 12_000_000, success, transcript: success ? `${note}. Walk through the relevant files, then show the failure and the expected behavior.` : null, transcript_path: success ? `/mock/${id}.transcript.md` : null, transcription_status: success ? "complete" : "processing", transcription_error: null, transcription_language: "en", poster_path: null, timeline_notes: id === "authentication-edge-cases" ? [
+  const item = (id: string, note: string, seconds: number, hourOffset: number, success = true): Recording => ({ id, project_id: projectId, video_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.mp4`, metadata_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.json`, note, git_branch: "feature/oauth", started_at: new Date(base.getTime() - hourOffset * 3_600_000).toISOString(), ended_at: base.toISOString(), duration_seconds: seconds, size_bytes: 12_000_000, success, transcript: success ? `${note}. Walk through the relevant files, then show the failure and the expected behavior.` : null, transcript_path: success ? `/mock/${id}.transcript.md` : null, transcript_segments: success ? [{ start_seconds: 4, end_seconds: 11, text: `${note}. Walk through the relevant files.` }, { start_seconds: 12, end_seconds: 19, text: "Then show the failure and the expected behavior." }] : [], transcription_status: success ? "complete" : "processing", transcription_error: null, transcription_language: "en", poster_path: null, timeline_notes: id === "authentication-edge-cases" ? [
     { id: "demo-note-1", timestamp_seconds: 22, text: "The expired-token response should preserve the original request ID.", created_at: base.toISOString(), source: "typed" },
     { id: "demo-note-2", timestamp_seconds: 74, text: "Compare this refresh path with the retry behavior shown later.", created_at: base.toISOString(), source: "voice" },
   ] : [] });

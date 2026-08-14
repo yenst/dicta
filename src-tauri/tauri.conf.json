@@ -51,7 +51,7 @@
     "shortDescription": "Record screen and voice as prompt context",
     "macOS": {
       "minimumSystemVersion": "15.0",
-      "signingIdentity": "-",
+      "signingIdentity": "Apple Development: jns.thiel@gmail.com (654YN3Y348)",
       "entitlements": "entitlements.plist",
       "infoPlist": "Info.plist"
     }

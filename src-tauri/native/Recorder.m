@@ -40,6 +40,7 @@ API_AVAILABLE(macos(15.0))
 @property(nonatomic, strong) SFSpeechRecognizer *recognizer;
 @property(nonatomic, strong) SFSpeechRecognitionTask *task;
 @property(nonatomic, copy) NSString *latestTranscript;
+@property(nonatomic, copy) NSArray<NSDictionary *> *latestSegments;
 @end
 
 @implementation DictaTranscriber
@@ -54,6 +55,23 @@ API_AVAILABLE(macos(15.0))
     NSDictionary *payload = @{ @"path": path ?: @"", key: value ?: @"" };
     NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
     return data == nil ? @"{}" : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+}
+
+- (NSArray<NSDictionary *> *)segmentsForTranscription:(SFTranscription *)transcription {
+    NSMutableArray<NSDictionary *> *segments = [NSMutableArray array];
+    NSCharacterSet *whitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet;
+    for (SFTranscriptionSegment *segment in transcription.segments) {
+        NSString *text = [segment.substring stringByTrimmingCharactersInSet:whitespace];
+        if (text.length == 0) continue;
+        NSTimeInterval start = MAX(0.0, segment.timestamp);
+        NSTimeInterval end = MAX(start, segment.timestamp + segment.duration);
+        [segments addObject:@{
+            @"start_seconds": @(start),
+            @"end_seconds": @(end),
+            @"text": text
+        }];
+    }
+    return segments;
 }
 
 - (void)enqueuePath:(NSString *)path language:(NSString *)language callback:(RecorderCallback)callback {
@@ -114,6 +132,7 @@ API_AVAILABLE(macos(15.0))
     request.taskHint = SFSpeechRecognitionTaskHintDictation;
     if (self.recognizer.supportsOnDeviceRecognition) request.requiresOnDeviceRecognition = YES;
     self.latestTranscript = @"";
+    self.latestSegments = @[];
 
     __weak DictaTranscriber *weakSelf = self;
     self.task = [self.recognizer recognitionTaskWithRequest:request
@@ -121,12 +140,15 @@ API_AVAILABLE(macos(15.0))
         dispatch_async(dispatch_get_main_queue(), ^{
             DictaTranscriber *strongSelf = weakSelf;
             if (strongSelf == nil || strongSelf.current == nil) return;
-            if (result != nil) strongSelf.latestTranscript = result.bestTranscription.formattedString ?: @"";
+            if (result != nil) {
+                strongSelf.latestTranscript = result.bestTranscription.formattedString ?: @"";
+                strongSelf.latestSegments = [strongSelf segmentsForTranscription:result.bestTranscription];
+            }
             if (result.isFinal) {
                 if (strongSelf.latestTranscript.length == 0) {
                     [strongSelf finishWithError:@"No speech was detected in this recording."];
                 } else {
-                    [strongSelf finishWithTranscript:strongSelf.latestTranscript];
+                    [strongSelf finishWithTranscript:strongSelf.latestTranscript segments:strongSelf.latestSegments];
                 }
             } else if (error != nil) {
                 [strongSelf finishWithError:error.localizedDescription ?: @"The recording could not be transcribed."];
@@ -135,10 +157,18 @@ API_AVAILABLE(macos(15.0))
     }];
 }
 
-- (void)finishWithTranscript:(NSString *)transcript {
+- (void)finishWithTranscript:(NSString *)transcript segments:(NSArray<NSDictionary *> *)segments {
     if (self.current == nil) return;
     RecorderCallback callback = self.current.callback;
-    NSString *payload = [self payloadForPath:self.current.inputPath value:transcript key:@"transcript"];
+    NSDictionary *payloadObject = @{
+        @"path": self.current.inputPath ?: @"",
+        @"transcript": transcript ?: @"",
+        @"transcript_segments": segments ?: @[]
+    };
+    NSData *payloadData = [NSJSONSerialization dataWithJSONObject:payloadObject options:0 error:nil];
+    NSString *payload = payloadData == nil
+        ? @"{}"
+        : [[NSString alloc] initWithData:payloadData encoding:NSUTF8StringEncoding];
     [self resetCurrent];
     Emit(callback, @"transcript", payload);
     [self startNextIfNeeded];
@@ -158,6 +188,7 @@ API_AVAILABLE(macos(15.0))
     self.task = nil;
     self.recognizer = nil;
     self.latestTranscript = nil;
+    self.latestSegments = nil;
     self.current = nil;
 }
 

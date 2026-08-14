@@ -93,6 +93,8 @@ struct Recording {
     #[serde(default)]
     transcript_path: Option<String>,
     #[serde(default)]
+    transcript_segments: Vec<TranscriptSegment>,
+    #[serde(default)]
     transcription_status: String,
     #[serde(default)]
     transcription_error: Option<String>,
@@ -102,6 +104,13 @@ struct Recording {
     poster_path: Option<String>,
     #[serde(default)]
     timeline_notes: Vec<TimelineNote>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct TranscriptSegment {
+    start_seconds: f64,
+    end_seconds: f64,
+    text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,7 +236,14 @@ struct NativeTranscriptionPayload {
     #[serde(default)]
     transcript: Option<String>,
     #[serde(default)]
+    transcript_segments: Vec<TranscriptSegment>,
+    #[serde(default)]
     error: Option<String>,
+}
+
+struct LocalTranscript {
+    transcript: String,
+    segments: Vec<TranscriptSegment>,
 }
 
 struct InnerState {
@@ -1803,6 +1819,7 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
         success: false,
         transcript: None,
         transcript_path: None,
+        transcript_segments: Vec::new(),
         transcription_status: "pending".to_string(),
         transcription_error: None,
         transcription_language: None,
@@ -2024,6 +2041,86 @@ fn write_recording(recording: &Recording) -> Result<(), String> {
         .map_err(|error| format!("Could not write recording metadata: {error}"))
 }
 
+fn clean_segment_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_transcript_segments(segments: &[TranscriptSegment]) -> Vec<TranscriptSegment> {
+    let mut normalized = segments
+        .iter()
+        .filter_map(|segment| {
+            let text = clean_segment_text(&segment.text);
+            if text.is_empty()
+                || !segment.start_seconds.is_finite()
+                || !segment.end_seconds.is_finite()
+                || segment.start_seconds < 0.0
+            {
+                return None;
+            }
+            Some(TranscriptSegment {
+                start_seconds: segment.start_seconds,
+                end_seconds: segment.end_seconds.max(segment.start_seconds),
+                text,
+            })
+        })
+        .take(10_000)
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| {
+        left.start_seconds
+            .partial_cmp(&right.start_seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut grouped: Vec<TranscriptSegment> = Vec::new();
+    for segment in normalized {
+        let should_join = grouped.last().is_some_and(|current| {
+            let gap = segment.start_seconds - current.end_seconds;
+            let current_duration = current.end_seconds - current.start_seconds;
+            gap <= 1.0 && current_duration < 6.0 && !current.text.ends_with(['.', '?', '!'])
+        });
+        if should_join {
+            let current = grouped.last_mut().expect("checked above");
+            current.text.push(' ');
+            current.text.push_str(&segment.text);
+            current.end_seconds = current.end_seconds.max(segment.end_seconds);
+        } else {
+            grouped.push(segment);
+        }
+    }
+    grouped
+}
+
+fn transcript_timestamp(seconds: f64) -> String {
+    let total_tenths = (seconds.max(0.0) * 10.0).round() as u64;
+    let hours = total_tenths / 36_000;
+    let minutes = (total_tenths / 600) % 60;
+    let seconds = (total_tenths / 10) % 60;
+    let tenths = total_tenths % 10;
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}.{tenths}")
+    } else {
+        format!("{minutes:02}:{seconds:02}.{tenths}")
+    }
+}
+
+fn timestamped_transcript(transcript: &str, segments: &[TranscriptSegment]) -> String {
+    if segments.is_empty() {
+        return transcript.trim().to_string();
+    }
+    segments
+        .iter()
+        .map(|segment| {
+            format!(
+                "[{}–{}] {}",
+                transcript_timestamp(segment.start_seconds),
+                transcript_timestamp(segment.end_seconds),
+                segment.text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn update_transcription(payload: &NativeTranscriptionPayload) -> Result<Recording, String> {
     let metadata_path = PathBuf::from(&payload.path).with_extension("json");
     let content = fs::read_to_string(&metadata_path)
@@ -2031,11 +2128,28 @@ fn update_transcription(payload: &NativeTranscriptionPayload) -> Result<Recordin
     let mut recording: Recording = serde_json::from_str(&content)
         .map_err(|error| format!("Invalid recording metadata: {error}"))?;
     if let Some(transcript) = payload.transcript.as_deref() {
+        let transcript_segments = normalize_transcript_segments(&payload.transcript_segments);
         let transcript_path = metadata_path.with_extension("transcript.md");
-        fs::write(&transcript_path, format!("{transcript}\n"))
-            .map_err(|error| format!("Could not write transcript: {error}"))?;
+        fs::write(
+            &transcript_path,
+            format!(
+                "{}\n",
+                timestamped_transcript(transcript, &transcript_segments)
+            ),
+        )
+        .map_err(|error| format!("Could not write transcript: {error}"))?;
+        let transcript_json_path = metadata_path.with_extension("transcript.json");
+        let transcript_json = serde_json::to_string_pretty(&serde_json::json!({
+            "version": 1,
+            "transcript": transcript,
+            "transcript_segments": &transcript_segments,
+        }))
+        .map_err(|error| format!("Could not encode timed transcript: {error}"))?;
+        fs::write(&transcript_json_path, format!("{transcript_json}\n"))
+            .map_err(|error| format!("Could not write timed transcript: {error}"))?;
         recording.transcript = Some(transcript.to_string());
         recording.transcript_path = Some(path_string(&transcript_path));
+        recording.transcript_segments = transcript_segments;
         recording.transcription_status = "complete".to_string();
         recording.transcription_error = None;
     } else {
@@ -2094,7 +2208,7 @@ fn local_whisper_transcript(
     app: &AppHandle,
     video_path: &str,
     language: &str,
-) -> Result<String, String> {
+) -> Result<LocalTranscript, String> {
     let mut hasher = DefaultHasher::new();
     video_path.hash(&mut hasher);
     let wav_path = std::env::temp_dir().join(format!("dicta-{}.wav", hasher.finish()));
@@ -2152,18 +2266,34 @@ fn local_whisper_transcript(
         state
             .full(params, &samples)
             .map_err(|error| format!("Local transcription failed: {error}"))?;
-        let transcript = state
+        let segments = state
             .as_iter()
-            .map(|segment| segment.to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
-            .split_whitespace()
+            .filter_map(|segment| {
+                let text = clean_segment_text(&segment.to_string());
+                if text.is_empty() {
+                    return None;
+                }
+                Some(TranscriptSegment {
+                    // whisper.cpp exposes segment timestamps in centiseconds.
+                    start_seconds: segment.start_timestamp() as f64 / 100.0,
+                    end_seconds: segment.end_timestamp() as f64 / 100.0,
+                    text,
+                })
+            })
+            .collect::<Vec<_>>();
+        let segments = normalize_transcript_segments(&segments);
+        let transcript = segments
+            .iter()
+            .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
         if transcript.is_empty() {
             Err("No speech was detected in this recording".to_string())
         } else {
-            Ok(transcript)
+            Ok(LocalTranscript {
+                transcript,
+                segments,
+            })
         }
     })();
     let _ = fs::remove_file(wav_path);
@@ -2210,6 +2340,7 @@ async fn transcribe_voice_note(
         let lock = LOCAL_TRANSCRIBER.get_or_init(|| Mutex::new(()));
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         local_whisper_transcript(&app_for_transcription, &audio_path_string, &language)
+            .map(|result| result.transcript)
     })
     .await;
     let _ = fs::remove_file(audio_path);
@@ -2224,14 +2355,16 @@ fn queue_local_transcription(app: &AppHandle, video_path: String, language: Stri
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let result = local_whisper_transcript(&app, &video_path, &language);
         let payload = match result {
-            Ok(transcript) => NativeTranscriptionPayload {
+            Ok(result) => NativeTranscriptionPayload {
                 path: video_path,
-                transcript: Some(transcript),
+                transcript: Some(result.transcript),
+                transcript_segments: result.segments,
                 error: None,
             },
             Err(error) => NativeTranscriptionPayload {
                 path: video_path,
                 transcript: None,
+                transcript_segments: Vec::new(),
                 error: Some(error),
             },
         };
@@ -2511,6 +2644,7 @@ extern "C" fn native_recorder_callback(event: *const c_char, message: *const c_c
                     let payload = NativeTranscriptionPayload {
                         path: video_path,
                         transcript: None,
+                        transcript_segments: Vec::new(),
                         error: Some(error.clone()),
                     };
                     let _ = update_transcription(&payload);
@@ -2780,10 +2914,13 @@ mod tests {
 
         assert!(!project_path.join("project.json").exists());
         assert!(recording_path.is_file());
-        assert!(fs::read_dir(&project_path).unwrap().flatten().any(|entry| entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with("project.removed-")));
+        assert!(fs::read_dir(&project_path)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("project.removed-")));
         assert!(load_projects(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
@@ -2898,6 +3035,7 @@ mod tests {
             success: false,
             transcript: None,
             transcript_path: None,
+            transcript_segments: Vec::new(),
             transcription_status: "pending".to_string(),
             transcription_error: None,
             transcription_language: None,
@@ -3163,6 +3301,89 @@ mod tests {
     }
 
     #[test]
+    fn transcript_segments_are_grouped_and_timestamped() {
+        let segments = normalize_transcript_segments(&[
+            TranscriptSegment {
+                start_seconds: 1.0,
+                end_seconds: 1.4,
+                text: "Open".into(),
+            },
+            TranscriptSegment {
+                start_seconds: 1.5,
+                end_seconds: 2.0,
+                text: "the retry menu.".into(),
+            },
+            TranscriptSegment {
+                start_seconds: 7.0,
+                end_seconds: 9.25,
+                text: "Inspect the response.".into(),
+            },
+        ]);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, "Open the retry menu.");
+        assert_eq!(
+            timestamped_transcript("fallback", &segments),
+            "[00:01.0–00:02.0] Open the retry menu.\n[00:07.0–00:09.3] Inspect the response."
+        );
+    }
+
+    #[test]
+    fn update_transcription_persists_timed_sidecars() {
+        let root = std::env::temp_dir().join(format!(
+            "dicta-timed-transcript-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let video_path = root.join("recording.mp4");
+        let metadata_path = root.join("recording.json");
+        fs::write(&video_path, []).unwrap();
+        let recording = Recording {
+            id: "timed".into(),
+            project_id: "demo".into(),
+            video_path: path_string(&video_path),
+            metadata_path: path_string(&metadata_path),
+            note: String::new(),
+            git_branch: Some("main".into()),
+            started_at: Utc::now(),
+            ended_at: Some(Utc::now()),
+            duration_seconds: Some(30.0),
+            size_bytes: Some(0),
+            success: true,
+            transcript: None,
+            transcript_path: None,
+            transcript_segments: Vec::new(),
+            transcription_status: "processing".into(),
+            transcription_error: None,
+            transcription_language: Some("en".into()),
+            poster_path: None,
+            timeline_notes: Vec::new(),
+        };
+        write_recording(&recording).unwrap();
+        let updated = update_transcription(&NativeTranscriptionPayload {
+            path: path_string(&video_path),
+            transcript: Some("Open the retry menu".into()),
+            transcript_segments: vec![TranscriptSegment {
+                start_seconds: 12.0,
+                end_seconds: 15.5,
+                text: "Open the retry menu".into(),
+            }],
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(updated.transcript_segments.len(), 1);
+        assert!(fs::read_to_string(root.join("recording.transcript.md"))
+            .unwrap()
+            .contains("[00:12.0–00:15.5]"));
+        assert!(fs::read_to_string(root.join("recording.transcript.json"))
+            .unwrap()
+            .contains("transcript_segments"));
+        let stored: Recording =
+            serde_json::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
+        assert_eq!(stored.transcript_segments[0].start_seconds, 12.0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn failed_transcripts_are_not_retried() {
         let recording = Recording {
             id: "one".into(),
@@ -3178,6 +3399,7 @@ mod tests {
             success: true,
             transcript: None,
             transcript_path: None,
+            transcript_segments: Vec::new(),
             transcription_status: "failed".into(),
             transcription_error: Some("no speech".into()),
             transcription_language: Some("en".into()),

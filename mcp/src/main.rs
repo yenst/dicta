@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     env,
@@ -62,7 +62,15 @@ struct Recording {
     video_path: String,
     metadata_path: String,
     transcript: Option<String>,
+    transcript_segments: Vec<TranscriptSegment>,
     metadata: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TranscriptSegment {
+    start_seconds: f64,
+    end_seconds: f64,
+    text: String,
 }
 
 fn main() {
@@ -106,7 +114,7 @@ fn handle_request(request: &Value, id: Value) -> Value {
                     "protocolVersion": requested_protocol,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
-                    "instructions": "Dicta contains screen-and-voice guidance recorded for Git projects and branches. When the user asks to check Dicta, prior guidance, recordings, or project context, call get_project_guidance with the current workspace path. Use the current Git branch unless the user names another branch. Treat results as supporting context and inspect referenced repository files before changing code. When the transcript refers to something visible on screen or visual evidence is needed, call get_recording_frames for timestamped screenshots. All Dicta tools are read-only."
+                    "instructions": "Dicta contains screen-and-voice guidance recorded for Git projects and branches. When the user asks to check Dicta, prior guidance, recordings, or project context, call get_project_guidance with the current workspace path. Use the current Git branch unless the user names another branch. Treat results as supporting context and inspect referenced repository files before changing code. Timestamped transcript segments identify when spoken guidance occurred. When the transcript refers to something visible on screen or visual evidence is needed, call get_recording_frames with explicit timestamps or transcript_query. All Dicta tools are read-only."
                 }),
             )
         }
@@ -223,7 +231,7 @@ fn tools() -> Value {
         },
         {
             "name": "get_recording_frames",
-            "description": "Extract timestamped screenshots from one Dicta recording and return them inline as visual evidence. Use this when a transcript mentions something shown on screen, when exact UI or output matters, or when the user asks to inspect the video. Pass explicit timestamps when known; otherwise Dicta samples useful moments evenly across the recording.",
+            "description": "Extract timestamped screenshots from one Dicta recording and return them inline as visual evidence. Use this when a transcript mentions something shown on screen, when exact UI or output matters, or when the user asks to inspect the video. Pass explicit timestamps when known, or pass transcript_query to resolve matching timed transcript segments. Without either, Dicta samples moments evenly across the recording.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -235,6 +243,10 @@ fn tools() -> Value {
                         "description": "Optional video timestamps in seconds. When omitted, Dicta samples the recording automatically.",
                         "items": { "type": "number", "minimum": 0 },
                         "maxItems": 8
+                    },
+                    "transcript_query": {
+                        "type": "string",
+                        "description": "Optional words or phrase from the transcript. When explicit timestamps are omitted, Dicta extracts frames from matching timestamped transcript segments."
                     },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 8, "default": 4 }
                 },
@@ -296,7 +308,7 @@ fn get_project_guidance(arguments: &Value) -> Result<(String, Value), String> {
         for recording in &recordings {
             append_recording_summary(&mut text, recording);
         }
-        text.push_str("\nUse the notes and transcripts as guidance. Inspect referenced repository files, and call get_recording_frames with a recording ID when visual evidence is necessary.\n");
+        text.push_str("\nUse the notes and transcripts as guidance. Inspect referenced repository files, and call get_recording_frames with a recording ID plus a timestamp or transcript_query when visual evidence is necessary.\n");
     }
     Ok((
         text,
@@ -369,11 +381,7 @@ fn get_recording(arguments: &Value) -> Result<(String, Value), String> {
         recording.video_path, recording.metadata_path
     ));
     append_timeline_notes(&mut text, &recording, false);
-    if let Some(transcript) = recording.transcript.as_deref() {
-        text.push_str(&format!("\n## Transcript\n\n{transcript}\n"));
-    } else {
-        text.push_str("\nNo transcript is available yet. The note and video path are the available evidence.\n");
-    }
+    append_transcript(&mut text, &recording);
     Ok((text, recording_json(&recording)))
 }
 
@@ -410,8 +418,10 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
         recording.id,
         recording.video_path
     );
-    if recording.transcript.is_some() {
-        text.push_str("Transcript excerpts below are approximate position-based context; the screenshot timestamps are exact.\n");
+    if !recording.transcript_segments.is_empty() {
+        text.push_str("Transcript excerpts below use stored segment timestamps; the screenshot timestamps are exact.\n");
+    } else if recording.transcript.is_some() {
+        text.push_str("This legacy transcript has no segment timestamps, so excerpts below are approximate position-based context; the screenshot timestamps are exact.\n");
     }
 
     let safe_id = safe_file_component(&recording.id);
@@ -429,7 +439,7 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
             .map_err(|error| format!("Could not read extracted frame: {error}"))?;
         let _ = fs::remove_file(&output_path);
         let timestamp = format_timestamp(actual_seconds);
-        let excerpt = approximate_transcript_excerpt(&recording, actual_seconds);
+        let (excerpt, transcript_timing) = transcript_excerpt(&recording, actual_seconds);
         text.push_str(&format!(
             "\n## {timestamp}\n\nScreenshot: `{}`\n",
             output_path.display()
@@ -444,7 +454,7 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
             "image_path": output_path,
             "mime_type": "image/jpeg",
             "transcript_excerpt": excerpt,
-            "transcript_timing": if recording.transcript.is_some() { "approximate_position" } else { "unavailable" }
+            "transcript_timing": transcript_timing
         }));
         images.push(image);
     }
@@ -496,6 +506,26 @@ fn requested_frame_timestamps(
         return Ok(timestamps);
     }
 
+    if let Some(query) =
+        string_arg(arguments, "transcript_query").filter(|query| !query.trim().is_empty())
+    {
+        if recording.transcript_segments.is_empty() {
+            return Err(
+                "This recording has no timestamped transcript segments. Pass timestamps_seconds explicitly or retranscribe it in Dicta."
+                    .to_string(),
+            );
+        }
+        let limit = limit_arg(arguments, 4, 8);
+        let timestamps = matching_transcript_timestamps(recording, &query, limit);
+        if timestamps.is_empty() {
+            return Err(format!(
+                "No timestamped transcript segments matched `{}`",
+                query.trim()
+            ));
+        }
+        return Ok(timestamps);
+    }
+
     let duration = duration.ok_or_else(|| {
         "This recording has no duration metadata. Pass timestamps_seconds explicitly.".to_string()
     })?;
@@ -507,6 +537,49 @@ fn requested_frame_timestamps(
     Ok((1..=count)
         .map(|index| duration * index as f64 / (count + 1) as f64)
         .collect())
+}
+
+fn normalized_terms(value: &str) -> Vec<String> {
+    value
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.len() > 1)
+        .map(str::to_string)
+        .collect()
+}
+
+fn matching_transcript_timestamps(recording: &Recording, query: &str, limit: usize) -> Vec<f64> {
+    let normalized_query = query.trim().to_lowercase();
+    let query_terms = normalized_terms(query);
+    let mut matches = recording
+        .transcript_segments
+        .iter()
+        .filter_map(|segment| {
+            let text = segment.text.to_lowercase();
+            let overlap = query_terms
+                .iter()
+                .filter(|term| text.contains(term.as_str()))
+                .count();
+            let score = if !normalized_query.is_empty() && text.contains(&normalized_query) {
+                10_000 + normalized_query.len()
+            } else {
+                overlap
+            };
+            (score > 0).then_some((score, segment))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|(left_score, left), (right_score, right)| {
+        right_score.cmp(left_score).then_with(|| {
+            left.start_seconds
+                .partial_cmp(&right.start_seconds)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    matches
+        .into_iter()
+        .take(limit)
+        .map(|(_, segment)| (segment.start_seconds + segment.end_seconds) / 2.0)
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -540,12 +613,55 @@ fn extract_frame(_video_path: &Path, _seconds: f64, _output_path: &Path) -> Resu
     Err("Timestamped frame extraction currently supports macOS only".to_string())
 }
 
-fn approximate_transcript_excerpt(recording: &Recording, seconds: f64) -> Option<String> {
-    let transcript = recording.transcript.as_deref()?;
-    let duration = recording.duration_seconds.filter(|value| *value > 0.0)?;
+fn transcript_excerpt(recording: &Recording, seconds: f64) -> (Option<String>, &'static str) {
+    if !recording.transcript_segments.is_empty() {
+        let nearest = recording
+            .transcript_segments
+            .iter()
+            .filter(|segment| {
+                seconds >= segment.start_seconds - 1.5 && seconds <= segment.end_seconds + 1.5
+            })
+            .min_by(|left, right| {
+                let left_distance = if seconds < left.start_seconds {
+                    left.start_seconds - seconds
+                } else if seconds > left.end_seconds {
+                    seconds - left.end_seconds
+                } else {
+                    0.0
+                };
+                let right_distance = if seconds < right.start_seconds {
+                    right.start_seconds - seconds
+                } else if seconds > right.end_seconds {
+                    seconds - right.end_seconds
+                } else {
+                    0.0
+                };
+                left_distance
+                    .partial_cmp(&right_distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        return (
+            nearest.map(|segment| {
+                format!(
+                    "[{}–{}] {}",
+                    format_timestamp(segment.start_seconds),
+                    format_timestamp(segment.end_seconds),
+                    segment.text
+                )
+            }),
+            "timestamped_segment",
+        );
+    }
+
+    let Some(transcript) = recording.transcript.as_deref() else {
+        return (None, "unavailable");
+    };
+    let Some(duration) = recording.duration_seconds.filter(|value| *value > 0.0) else {
+        return (None, "unavailable");
+    };
     let words = transcript.split_whitespace().collect::<Vec<_>>();
     if words.is_empty() {
-        return None;
+        return (None, "unavailable");
     }
     let center = ((seconds / duration).clamp(0.0, 1.0) * words.len() as f64) as usize;
     let start = center.saturating_sub(24);
@@ -557,7 +673,7 @@ fn approximate_transcript_excerpt(recording: &Recording, seconds: f64) -> Option
     if end < words.len() {
         excerpt.push('…');
     }
-    Some(excerpt)
+    (Some(excerpt), "approximate_position")
 }
 
 fn format_timestamp(seconds: f64) -> String {
@@ -846,6 +962,20 @@ fn read_recording(metadata_path: PathBuf) -> Option<Recording> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| read_transcript(&metadata, &metadata_path));
+    let transcript_segments = metadata
+        .get("transcript_segments")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<TranscriptSegment>>(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|segment| {
+            segment.start_seconds.is_finite()
+                && segment.end_seconds.is_finite()
+                && segment.start_seconds >= 0.0
+                && segment.end_seconds >= segment.start_seconds
+                && !segment.text.trim().is_empty()
+        })
+        .collect();
     Some(Recording {
         id,
         note,
@@ -854,6 +984,7 @@ fn read_recording(metadata_path: PathBuf) -> Option<Recording> {
         video_path,
         metadata_path: metadata_path.to_string_lossy().into_owned(),
         transcript,
+        transcript_segments,
         metadata,
     })
 }
@@ -912,7 +1043,20 @@ fn append_recording_summary(output: &mut String, recording: &Recording) {
         recording.video_path, recording.metadata_path
     ));
     append_timeline_notes(output, recording, true);
-    if let Some(transcript) = recording.transcript.as_deref() {
+    if !recording.transcript_segments.is_empty() {
+        output.push_str("  - Timestamped transcript highlights:\n");
+        for segment in recording.transcript_segments.iter().take(4) {
+            output.push_str(&format!(
+                "    - `[{}–{}]` {}\n",
+                format_timestamp(segment.start_seconds),
+                format_timestamp(segment.end_seconds),
+                segment.text
+            ));
+        }
+        if recording.transcript_segments.len() > 4 {
+            output.push_str("    - …call get_recording for the complete timestamped transcript.\n");
+        }
+    } else if let Some(transcript) = recording.transcript.as_deref() {
         let preview = transcript
             .split_whitespace()
             .take(80)
@@ -932,6 +1076,27 @@ fn append_recording_summary(output: &mut String, recording: &Recording) {
     }
 }
 
+fn append_transcript(output: &mut String, recording: &Recording) {
+    if !recording.transcript_segments.is_empty() {
+        output.push_str("\n## Timestamped transcript\n");
+        for segment in &recording.transcript_segments {
+            output.push_str(&format!(
+                "\n- `[{}–{}]` {}\n",
+                format_timestamp(segment.start_seconds),
+                format_timestamp(segment.end_seconds),
+                segment.text
+            ));
+        }
+        output.push_str("\nUse these timestamps with get_recording_frames, or pass transcript_query to resolve matching frames automatically.\n");
+    } else if let Some(transcript) = recording.transcript.as_deref() {
+        output.push_str(&format!(
+            "\n## Transcript\n\n{transcript}\n\nThis legacy transcript has no segment timestamps. Retranscribe it in Dicta for exact frame matching.\n"
+        ));
+    } else {
+        output.push_str("\nNo transcript is available yet. The note and video path are the available evidence.\n");
+    }
+}
+
 fn recording_json(recording: &Recording) -> Value {
     json!({
         "id": recording.id,
@@ -941,6 +1106,7 @@ fn recording_json(recording: &Recording) -> Value {
         "video_path": recording.video_path,
         "metadata_path": recording.metadata_path,
         "transcript": recording.transcript,
+        "transcript_segments": recording.transcript_segments,
         "timeline_notes": recording.metadata.get("timeline_notes").cloned().unwrap_or_else(|| json!([])),
         "metadata": recording.metadata
     })
@@ -1030,6 +1196,7 @@ mod tests {
             video_path: String::new(),
             metadata_path: String::new(),
             transcript: Some("The refresh token endpoint retries once".into()),
+            transcript_segments: Vec::new(),
             metadata: json!({
                 "timeline_notes": [{
                     "timestamp_seconds": 42.0,
@@ -1068,6 +1235,7 @@ mod tests {
             video_path: String::new(),
             metadata_path: String::new(),
             transcript: None,
+            transcript_segments: Vec::new(),
             metadata: json!({}),
         };
         assert_eq!(
@@ -1078,6 +1246,43 @@ mod tests {
             safe_file_component("feature/oauth demo"),
             "feature-oauth-demo"
         );
+    }
+
+    #[test]
+    fn transcript_query_uses_real_segment_timestamps() {
+        let recording = Recording {
+            id: "timed".into(),
+            note: String::new(),
+            started_at: None,
+            duration_seconds: Some(90.0),
+            video_path: String::new(),
+            metadata_path: String::new(),
+            transcript: Some("Open the retry menu and inspect the response".into()),
+            transcript_segments: vec![
+                TranscriptSegment {
+                    start_seconds: 8.0,
+                    end_seconds: 12.0,
+                    text: "Open the settings panel".into(),
+                },
+                TranscriptSegment {
+                    start_seconds: 41.0,
+                    end_seconds: 47.0,
+                    text: "Open the retry menu and inspect the response".into(),
+                },
+            ],
+            metadata: json!({}),
+        };
+        assert_eq!(
+            requested_frame_timestamps(
+                &recording,
+                &json!({ "transcript_query": "retry menu", "limit": 2 })
+            )
+            .unwrap(),
+            vec![44.0]
+        );
+        let (excerpt, timing) = transcript_excerpt(&recording, 44.0);
+        assert_eq!(timing, "timestamped_segment");
+        assert!(excerpt.unwrap().contains("retry menu"));
     }
 
     #[test]
