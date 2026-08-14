@@ -4,7 +4,7 @@
   "version": "0.8.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 1420",
     "build:web": "tsc && vite build",
     "build:mcp": "cargo build --release --manifest-path mcp/Cargo.toml",
     "build": "npm run build:web && npm run build:mcp",

@@ -31,6 +31,16 @@ export interface Recording {
   transcription_status: "pending" | "processing" | "complete" | "failed" | "";
   transcription_error: string | null;
   transcription_language: string | null;
+  poster_path: string | null;
+  timeline_notes: TimelineNote[];
+}
+
+export interface TimelineNote {
+  id: string;
+  timestamp_seconds: number;
+  text: string;
+  created_at: string;
+  source: "typed" | "voice";
 }
 
 export interface Status {
@@ -76,6 +86,7 @@ export interface ModelDownloadEvent {
 export interface AppSettings {
   shortcut_id: string;
   cleanup_merged_videos: boolean;
+  transcription_language: string;
 }
 
 export interface CleanupSummary {

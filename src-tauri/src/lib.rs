@@ -21,8 +21,13 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static LOCAL_TRANSCRIBER: OnceLock<Mutex<()>> = OnceLock::new();
+static WHISPER_MODEL: OnceLock<Mutex<Option<LoadedWhisper>>> = OnceLock::new();
 
 const QUALITY_MODEL_FILENAME: &str = "ggml-large-v3-turbo-q5_0.bin";
+const MAX_RECORDING_SECONDS: u64 = 20 * 60;
+const TRAY_ID: &str = "dicta";
+const ALLOWED_LANGUAGES: [&str; 6] = ["auto", "nl", "en", "fr", "de", "es"];
+const DEFAULT_LANGUAGE: &str = "auto";
 const QUALITY_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 const QUALITY_MODEL_SHA1: &str = "e050f7970618a659205450ad97eb95a18d69c9ee";
@@ -38,9 +43,11 @@ unsafe extern "C" {
     fn dicta_stop(callback: extern "C" fn(*const c_char, *const c_char));
     fn dicta_transcribe(
         input_path: *const c_char,
+        language: *const c_char,
         callback: extern "C" fn(*const c_char, *const c_char),
     );
     fn dicta_extract_audio(input_path: *const c_char, output_path: *const c_char) -> bool;
+    fn dicta_extract_poster(input_path: *const c_char, output_path: *const c_char) -> bool;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +98,24 @@ struct Recording {
     transcription_error: Option<String>,
     #[serde(default)]
     transcription_language: Option<String>,
+    #[serde(default)]
+    poster_path: Option<String>,
+    #[serde(default)]
+    timeline_notes: Vec<TimelineNote>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TimelineNote {
+    id: String,
+    timestamp_seconds: f64,
+    text: String,
+    created_at: DateTime<Utc>,
+    #[serde(default = "typed_note_source")]
+    source: String,
+}
+
+fn typed_note_source() -> String {
+    "typed".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -154,6 +179,8 @@ struct AppSettings {
     shortcut_id: String,
     #[serde(default = "enabled_by_default")]
     cleanup_merged_videos: bool,
+    #[serde(default = "default_language")]
+    transcription_language: String,
 }
 
 impl Default for AppSettings {
@@ -161,8 +188,14 @@ impl Default for AppSettings {
         Self {
             shortcut_id: default_shortcut_id(),
             cleanup_merged_videos: true,
+            transcription_language: default_language(),
         }
     }
+}
+
+struct LoadedWhisper {
+    path: PathBuf,
+    context: WhisperContext,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -200,6 +233,7 @@ struct NativeTranscriptionPayload {
 struct InnerState {
     status: RecorderStatus,
     session: Option<Recording>,
+    last_note: String,
 }
 
 struct AppState {
@@ -220,6 +254,7 @@ impl AppState {
                     last_error: None,
                 },
                 session: None,
+                last_note: String::new(),
             }),
         }
     }
@@ -233,6 +268,24 @@ fn enabled_by_default() -> bool {
     true
 }
 
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_string()
+}
+
+fn is_allowed_language(language: &str) -> bool {
+    ALLOWED_LANGUAGES.contains(&language)
+}
+
+fn normalize_settings(mut settings: AppSettings) -> AppSettings {
+    if shortcut_for_id(&settings.shortcut_id).is_none() {
+        settings.shortcut_id = default_shortcut_id();
+    }
+    if !is_allowed_language(&settings.transcription_language) {
+        settings.transcription_language = default_language();
+    }
+    settings
+}
+
 fn settings_path(root: &Path) -> PathBuf {
     root.join("settings.json")
 }
@@ -241,8 +294,12 @@ fn read_settings(root: &Path) -> AppSettings {
     fs::read_to_string(settings_path(root))
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
-        .filter(|settings: &AppSettings| shortcut_for_id(&settings.shortcut_id).is_some())
+        .map(normalize_settings)
         .unwrap_or_default()
+}
+
+fn settings_language(root: &Path) -> String {
+    read_settings(root).transcription_language
 }
 
 fn write_settings(root: &Path, settings: &AppSettings) -> Result<(), String> {
@@ -297,18 +354,6 @@ fn whisper_model_candidates(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     }
     if let Ok(models) = models_dir() {
         candidates.push(models.join("ggml-large-v3-turbo.bin"));
-    }
-    // Reuse Ada's full-quality local model when available on this Mac. Dicta's
-    // own downloaded model remains the portable path for every other machine.
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(
-            home.join("projects")
-                .join("ada")
-                .join("models")
-                .join("ggml-large-v3-turbo.bin"),
-        );
-    }
-    if let Ok(models) = models_dir() {
         candidates.push(models.join(QUALITY_MODEL_FILENAME));
         candidates.push(models.join("ggml-medium.bin"));
     }
@@ -1314,7 +1359,7 @@ fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Proje
         .ok_or_else(|| "Could not determine the project name from this folder".to_string())?
         .to_string();
     let mut id = slugify(&name);
-    if project_dir(&state.root, &id).exists() {
+    if project_dir(&state.root, &id).join("project.json").exists() {
         let mut hasher = DefaultHasher::new();
         source_string.hash(&mut hasher);
         id = format!("{}-{:06x}", id, hasher.finish() & 0x00ff_ffff);
@@ -1349,10 +1394,60 @@ fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Proje
     Ok(project_view(&state.root, metadata))
 }
 
+fn remove_project_registration(root: &Path, project_id: &str) -> Result<(), String> {
+    if project_id.is_empty()
+        || Path::new(project_id)
+            .file_name()
+            .and_then(|value| value.to_str())
+            != Some(project_id)
+    {
+        return Err("Invalid project identifier".to_string());
+    }
+    let metadata = read_project(root, project_id)?;
+    if metadata.id != project_id {
+        return Err("Project registration does not match the requested project".to_string());
+    }
+    let registration = project_dir(root, project_id).join("project.json");
+    let archived = project_dir(root, project_id).join(format!(
+        "project.removed-{}.json",
+        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    fs::rename(&registration, &archived).map_err(|error| {
+        format!(
+            "Could not remove project registration {}: {error}",
+            registration.display()
+        )
+    })
+}
+
+#[tauri::command]
+fn remove_project(project_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let inner = state
+            .inner
+            .lock()
+            .map_err(|_| "Recorder state is unavailable".to_string())?;
+        if matches!(
+            inner.status.phase,
+            RecordingPhase::Preparing | RecordingPhase::Recording | RecordingPhase::Stopping
+        ) {
+            return Err("Stop the current recording before removing a project".to_string());
+        }
+    }
+    remove_project_registration(&state.root, &project_id)?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "Recorder state is unavailable".to_string())?;
+    if inner.status.active_project_id.as_deref() == Some(project_id.as_str()) {
+        inner.status.active_project_id = None;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn refresh_project(project_id: String, state: State<'_, AppState>) -> Result<Project, String> {
     let metadata = read_project(&state.root, &project_id)?;
-    let _ = cleanup_merged_videos_for_project(&state.root, &metadata);
     Ok(project_view(&state.root, metadata))
 }
 
@@ -1401,6 +1496,20 @@ fn set_cleanup_merged_videos(
 }
 
 #[tauri::command]
+fn set_transcription_language(
+    language: String,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    if !is_allowed_language(&language) {
+        return Err(format!("Unsupported transcription language: {language}"));
+    }
+    let mut settings = read_settings(&state.root);
+    settings.transcription_language = language;
+    write_settings(&state.root, &settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 fn cleanup_merged_videos(
     project_id: String,
     state: State<'_, AppState>,
@@ -1430,10 +1539,57 @@ fn select_project(project_id: Option<String>, state: State<'_, AppState>) -> Res
 
 #[tauri::command]
 fn list_recordings(
+    app: AppHandle,
     project_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<Recording>, String> {
-    load_recordings(&state.root, &project_id)
+    let mut recordings = load_recordings(&state.root, &project_id)?;
+    let asset_scope = app.asset_protocol_scope();
+    for recording in &mut recordings {
+        if recording
+            .poster_path
+            .as_deref()
+            .is_none_or(|path| !Path::new(path).is_file())
+        {
+            let poster = poster_path_for_video(&recording.video_path);
+            if poster.is_file() {
+                recording.poster_path = Some(path_string(&poster));
+            }
+        }
+        if Path::new(&recording.video_path).is_file() {
+            asset_scope
+                .allow_file(&recording.video_path)
+                .map_err(|error| format!("Could not grant video playback access: {error}"))?;
+        }
+        if let Some(poster_path) = recording.poster_path.as_deref() {
+            if Path::new(poster_path).is_file() {
+                asset_scope
+                    .allow_file(poster_path)
+                    .map_err(|error| format!("Could not grant poster access: {error}"))?;
+            }
+        }
+    }
+    Ok(recordings)
+}
+
+#[tauri::command]
+fn ensure_recording_poster(
+    app: AppHandle,
+    project_id: String,
+    recording_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let mut recording = load_recordings(&state.root, &project_id)?
+        .into_iter()
+        .find(|recording| recording.id == recording_id)
+        .ok_or_else(|| format!("Recording not found: {recording_id}"))?;
+    attach_poster(&mut recording);
+    if let Some(poster_path) = recording.poster_path.as_deref() {
+        app.asset_protocol_scope()
+            .allow_file(poster_path)
+            .map_err(|error| format!("Could not grant poster access: {error}"))?;
+    }
+    Ok(recording.poster_path)
 }
 
 fn recording_artifact_paths(metadata_path: &Path) -> Vec<PathBuf> {
@@ -1445,6 +1601,7 @@ fn recording_artifact_paths(metadata_path: &Path) -> Vec<PathBuf> {
     };
     [
         format!("{stem}.mp4"),
+        format!("{stem}.poster.jpg"),
         format!("{stem}.transcript.md"),
         format!("{stem}.transcript.base.md"),
         format!("{stem}.transcript.json"),
@@ -1519,6 +1676,71 @@ fn delete_recording(
     Ok(())
 }
 
+#[tauri::command]
+fn save_timeline_notes(
+    project_id: String,
+    recording_id: String,
+    timeline_notes: Vec<TimelineNote>,
+    state: State<'_, AppState>,
+) -> Result<Recording, String> {
+    if timeline_notes.len() > 500 {
+        return Err("A recording can contain at most 500 timeline notes".to_string());
+    }
+    for note in &timeline_notes {
+        if note.id.trim().is_empty()
+            || note.text.trim().is_empty()
+            || note.text.chars().count() > 2_000
+            || !note.timestamp_seconds.is_finite()
+            || note.timestamp_seconds < 0.0
+            || !matches!(note.source.as_str(), "typed" | "voice")
+        {
+            return Err("One or more timeline notes are invalid".to_string());
+        }
+    }
+
+    let project = read_project(&state.root, &project_id)?;
+    let (_, recording_root) = active_recording_root(&state.root, &project)?;
+    let metadata_path = recording_files(&recording_root)
+        .into_iter()
+        .find(|path| {
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<Recording>(&content).ok())
+                .is_some_and(|recording| recording.id == recording_id)
+        })
+        .ok_or_else(|| format!("Recording not found: {recording_id}"))?;
+    let canonical_recordings = recording_root
+        .join("recordings")
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the recording folder: {error}"))?;
+    let canonical_metadata = metadata_path
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the recording metadata: {error}"))?;
+    if !canonical_metadata.starts_with(&canonical_recordings) {
+        return Err("Refusing to update a recording outside the active branch".to_string());
+    }
+    let content = fs::read_to_string(&canonical_metadata)
+        .map_err(|error| format!("Could not read {}: {error}", canonical_metadata.display()))?;
+    let mut recording: Recording = serde_json::from_str(&content)
+        .map_err(|error| format!("Invalid recording metadata: {error}"))?;
+    if recording.duration_seconds.is_some_and(|duration| {
+        timeline_notes
+            .iter()
+            .any(|note| note.timestamp_seconds > duration + 0.5)
+    }) {
+        return Err("A timeline note cannot be placed beyond the end of the recording".to_string());
+    }
+    recording.metadata_path = path_string(&canonical_metadata);
+    recording.timeline_notes = timeline_notes;
+    recording.timeline_notes.sort_by(|left, right| {
+        left.timestamp_seconds
+            .partial_cmp(&right.timestamp_seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    write_recording(&recording)?;
+    Ok(recording)
+}
+
 fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus, String> {
     let state = app.state::<AppState>();
     let mut inner = state
@@ -1557,6 +1779,15 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
     let video_path = day_dir.join(format!("{stem}.mp4"));
     let metadata_path = day_dir.join(format!("{stem}.json"));
     let video_path_string = path_string(&video_path);
+    let note = {
+        let trimmed = note.trim();
+        if trimmed.is_empty() {
+            inner.last_note.clone()
+        } else {
+            inner.last_note = trimmed.to_string();
+            trimmed.to_string()
+        }
+    };
 
     inner.session = Some(Recording {
         id: format!("{}-{}", now_local.format("%Y%m%d"), stem),
@@ -1575,6 +1806,8 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
         transcription_status: "pending".to_string(),
         transcription_error: None,
         transcription_language: None,
+        poster_path: None,
+        timeline_notes: Vec::new(),
     });
     inner.status = RecorderStatus {
         phase: RecordingPhase::Preparing,
@@ -1676,7 +1909,7 @@ fn build_context(project_id: String, state: State<'_, AppState>) -> Result<Strin
         return Ok(output);
     }
     output.push_str("Review these screen-and-voice recordings as context for this task:\n\n");
-    for recording in recordings.iter().take(12) {
+    for recording in recordings.iter().take(50) {
         output.push_str(&format!(
             "- **{}** ({})\n  - Video: `{}`\n  - Metadata: `{}`\n{}",
             if recording.note.is_empty() {
@@ -1696,6 +1929,15 @@ fn build_context(project_id: String, state: State<'_, AppState>) -> Result<Strin
                 .map(|path| format!("  - Transcript: `{path}`\n"))
                 .unwrap_or_else(|| "  - Transcript: processing\n".to_string())
         ));
+        for note in &recording.timeline_notes {
+            let total_seconds = note.timestamp_seconds.max(0.0).floor() as u64;
+            output.push_str(&format!(
+                "  - Note at {:02}:{:02}: {}\n",
+                total_seconds / 60,
+                total_seconds % 60,
+                note.text.replace(['\r', '\n'], " ")
+            ));
+        }
     }
     output.push_str("\nUse the transcript as primary guidance and the original video when visual evidence is necessary. Ask if any referenced detail is ambiguous.\n");
     Ok(output)
@@ -1723,6 +1965,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 }
 
 fn emit_recorder_event(app: &AppHandle, event: &str, message: &str, status: RecorderStatus) {
+    sync_tray(app, &status.phase);
     let _ = app.emit(
         "recorder-event",
         RecorderEventPayload {
@@ -1731,6 +1974,47 @@ fn emit_recorder_event(app: &AppHandle, event: &str, message: &str, status: Reco
             status,
         },
     );
+}
+
+fn sync_tray(app: &AppHandle, phase: &RecordingPhase) {
+    let recording = matches!(
+        phase,
+        RecordingPhase::Preparing | RecordingPhase::Recording | RecordingPhase::Stopping
+    );
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(if recording {
+            "Dicta — Recording"
+        } else {
+            "Dicta"
+        }));
+        let _ = tray.set_title(Some(if recording { "●" } else { "" }));
+    }
+}
+
+fn schedule_recording_limit(app: &AppHandle, started_at: DateTime<Utc>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(MAX_RECORDING_SECONDS));
+        let should_stop = {
+            let state = app.state::<AppState>();
+            let inner = state
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            matches!(inner.status.phase, RecordingPhase::Recording)
+                && inner.status.started_at == Some(started_at)
+        };
+        if should_stop {
+            if let Ok(status) = stop_recording_inner(&app) {
+                emit_recorder_event(
+                    &app,
+                    "stopping",
+                    "Reached the 20-minute recording limit",
+                    status,
+                );
+            }
+        }
+    });
 }
 
 fn write_recording(recording: &Recording) -> Result<(), String> {
@@ -1774,13 +2058,43 @@ fn mark_transcription_processing(video_path: &str, language: &str) -> Result<(),
     write_recording(&recording)
 }
 
+fn whisper_prompt(language: &str) -> &'static str {
+    if language == "nl" {
+        "Nederlandse technische uitleg over softwareontwikkeling, API-integraties, broncode en implementatiedetails."
+    } else {
+        "Technical software explanation about APIs, source code, and implementation details."
+    }
+}
+
+fn loaded_whisper(
+    app: &AppHandle,
+) -> Result<std::sync::MutexGuard<'static, Option<LoadedWhisper>>, String> {
+    let model_path = selected_whisper_model(app)?;
+    let mut slot = WHISPER_MODEL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let needs_load = slot
+        .as_ref()
+        .map(|loaded| loaded.path != model_path)
+        .unwrap_or(true);
+    if needs_load {
+        let context =
+            WhisperContext::new_with_params(&model_path, WhisperContextParameters::default())
+                .map_err(|error| format!("Could not load Dicta's Whisper model: {error}"))?;
+        *slot = Some(LoadedWhisper {
+            path: model_path,
+            context,
+        });
+    }
+    Ok(slot)
+}
+
 fn local_whisper_transcript(
     app: &AppHandle,
     video_path: &str,
     language: &str,
 ) -> Result<String, String> {
-    let model_path = selected_whisper_model(app)?;
-
     let mut hasher = DefaultHasher::new();
     video_path.hash(&mut hasher);
     let wav_path = std::env::temp_dir().join(format!("dicta-{}.wav", hasher.finish()));
@@ -1812,10 +2126,12 @@ fn local_whisper_transcript(
             return Err("No narration audio was found in this recording".to_string());
         }
 
-        let context =
-            WhisperContext::new_with_params(&model_path, WhisperContextParameters::default())
-                .map_err(|error| format!("Could not load Dicta's Whisper model: {error}"))?;
+        let loaded = loaded_whisper(app)?;
+        let context = loaded
+            .as_ref()
+            .ok_or_else(|| "Dicta's Whisper model failed to load".to_string())?;
         let mut state = context
+            .context
             .create_state()
             .map_err(|error| format!("Could not start local transcription: {error}"))?;
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
@@ -1827,12 +2143,7 @@ fn local_whisper_transcript(
         } else {
             Some(language)
         });
-        let prompt = if language == "nl" {
-            "Nederlandse technische uitleg over softwareontwikkeling, API-integraties, Securex, quota's, contracten, werknemers, salary codes, prestation codes en broncode."
-        } else {
-            "Technical software explanation about API integrations, source code, contracts, employees, salary codes and implementation details."
-        };
-        params.set_initial_prompt(prompt);
+        params.set_initial_prompt(whisper_prompt(language));
         params.set_translate(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -1857,6 +2168,52 @@ fn local_whisper_transcript(
     })();
     let _ = fs::remove_file(wav_path);
     result
+}
+
+#[tauri::command]
+async fn transcribe_voice_note(
+    app: AppHandle,
+    audio_bytes: Vec<u8>,
+    mime_type: String,
+    language: String,
+) -> Result<String, String> {
+    if !is_allowed_language(&language) {
+        return Err(format!("Unsupported transcription language: {language}"));
+    }
+    if audio_bytes.len() < 128 {
+        return Err("The voice note did not contain enough audio".to_string());
+    }
+    if audio_bytes.len() > 16 * 1024 * 1024 {
+        return Err("Voice notes must be shorter than 16 MB".to_string());
+    }
+    let normalized_mime = mime_type.split(';').next().unwrap_or("");
+    let extension = match normalized_mime {
+        "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/webm" => "webm",
+        "audio/ogg" => "ogg",
+        "audio/wav" | "audio/x-wav" => "wav",
+        _ => return Err("Dicta does not support this microphone audio format".to_string()),
+    };
+    let mut hasher = DefaultHasher::new();
+    audio_bytes.hash(&mut hasher);
+    let audio_path = std::env::temp_dir().join(format!(
+        "dicta-voice-{}-{}.{}",
+        Utc::now().timestamp_millis(),
+        hasher.finish(),
+        extension
+    ));
+    fs::write(&audio_path, &audio_bytes)
+        .map_err(|error| format!("Could not prepare the voice note: {error}"))?;
+    let audio_path_string = path_string(&audio_path);
+    let app_for_transcription = app.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let lock = LOCAL_TRANSCRIBER.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        local_whisper_transcript(&app_for_transcription, &audio_path_string, &language)
+    })
+    .await;
+    let _ = fs::remove_file(audio_path);
+    joined.map_err(|error| format!("Voice transcription stopped unexpectedly: {error}"))?
 }
 
 fn queue_local_transcription(app: &AppHandle, video_path: String, language: String) {
@@ -1912,8 +2269,7 @@ fn retranscribe_recording(
     language: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let allowed_languages = ["auto", "nl", "en", "fr", "de", "es"];
-    if !allowed_languages.contains(&language.as_str()) {
+    if !is_allowed_language(&language) {
         return Err(format!("Unsupported transcription language: {language}"));
     }
     let recording = load_recordings(&state.root, &project_id)?
@@ -1939,19 +2295,50 @@ fn retranscribe_recording(
     Ok(())
 }
 
-fn queue_transcription(video_path: &str) -> Result<(), String> {
+fn queue_transcription(video_path: &str, language: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let path = CString::new(video_path)
             .map_err(|_| "The transcription path contains an unsupported character".to_string())?;
-        unsafe { dicta_transcribe(path.as_ptr(), native_recorder_callback) };
+        let spoken = CString::new(language)
+            .unwrap_or_else(|_| CString::new(DEFAULT_LANGUAGE).expect("default language is ascii"));
+        unsafe { dicta_transcribe(path.as_ptr(), spoken.as_ptr(), native_recorder_callback) };
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = video_path;
+        let _ = language;
         Err("Automatic transcription currently supports macOS only".to_string())
     }
+}
+
+fn should_retry_transcription(recording: &Recording) -> bool {
+    if !recording.success || !Path::new(&recording.video_path).exists() {
+        return false;
+    }
+    if !recording
+        .transcript
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        return false;
+    }
+    matches!(
+        recording.transcription_status.as_str(),
+        "pending" | "processing" | ""
+    )
+}
+
+fn language_for_recording(root: &Path, recording: &Recording) -> String {
+    recording
+        .transcription_language
+        .as_deref()
+        .filter(|language| is_allowed_language(language))
+        .map(str::to_string)
+        .unwrap_or_else(|| settings_language(root))
 }
 
 fn queue_pending_transcriptions(root: &Path) {
@@ -1960,18 +2347,52 @@ fn queue_pending_transcriptions(root: &Path) {
             continue;
         };
         for recording in recordings {
-            if recording.success
-                && recording
-                    .transcript
-                    .as_deref()
-                    .unwrap_or_default()
-                    .trim()
-                    .is_empty()
-                && Path::new(&recording.video_path).exists()
-            {
-                let _ = queue_transcription(&recording.video_path);
+            if should_retry_transcription(&recording) {
+                let language = language_for_recording(root, &recording);
+                let _ = queue_transcription(&recording.video_path, &language);
             }
         }
+    }
+}
+
+fn poster_path_for_video(video_path: &str) -> PathBuf {
+    PathBuf::from(video_path).with_extension("poster.jpg")
+}
+
+fn extract_poster(video_path: &str) -> Option<String> {
+    let poster = poster_path_for_video(video_path);
+    if poster.is_file() {
+        return Some(path_string(&poster));
+    }
+    if !Path::new(video_path).is_file() {
+        return None;
+    }
+    let input = CString::new(video_path).ok()?;
+    let output = CString::new(path_string(&poster)).ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        if unsafe { dicta_extract_poster(input.as_ptr(), output.as_ptr()) } && poster.is_file() {
+            return Some(path_string(&poster));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (input, output);
+    }
+    None
+}
+
+fn attach_poster(recording: &mut Recording) {
+    if recording
+        .poster_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).is_file())
+    {
+        return;
+    }
+    if let Some(poster) = extract_poster(&recording.video_path) {
+        recording.poster_path = Some(poster);
+        let _ = write_recording(recording);
     }
 }
 
@@ -1982,6 +2403,8 @@ fn finalize_session(app: &AppHandle, error: Option<String>) -> (RecorderStatus, 
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut video_path = None;
+    let mut poster_source = None;
+    let language = settings_language(&state.root);
     let capture_started = matches!(
         inner.status.phase,
         RecordingPhase::Recording | RecordingPhase::Stopping
@@ -2005,6 +2428,8 @@ fn finalize_session(app: &AppHandle, error: Option<String>) -> (RecorderStatus, 
             if recording.success {
                 recording.transcription_status = "processing".to_string();
                 recording.transcription_error = None;
+                recording.transcription_language = Some(language);
+                poster_source = Some(recording.video_path.clone());
                 video_path = Some(recording.video_path.clone());
             } else {
                 recording.transcription_status = "failed".to_string();
@@ -2021,7 +2446,20 @@ fn finalize_session(app: &AppHandle, error: Option<String>) -> (RecorderStatus, 
     inner.status.active_video_path = None;
     inner.status.started_at = None;
     inner.status.last_error = error;
-    (inner.status.clone(), video_path)
+    let status = inner.status.clone();
+    drop(inner);
+    if let Some(video) = poster_source.as_deref() {
+        if let Some(poster) = extract_poster(video) {
+            let metadata_path = PathBuf::from(video).with_extension("json");
+            if let Ok(content) = fs::read_to_string(&metadata_path) {
+                if let Ok(mut recording) = serde_json::from_str::<Recording>(&content) {
+                    recording.poster_path = Some(poster);
+                    let _ = write_recording(&recording);
+                }
+            }
+        }
+    }
+    (status, video_path)
 }
 
 extern "C" fn native_recorder_callback(event: *const c_char, message: *const c_char) {
@@ -2054,7 +2492,10 @@ extern "C" fn native_recorder_callback(event: *const c_char, message: *const c_c
                 inner.status.last_error = None;
                 inner.status.clone()
             };
-            emit_recorder_event(app, "started", &message, status);
+            emit_recorder_event(app, "started", &message, status.clone());
+            if let Some(started_at) = status.started_at {
+                schedule_recording_limit(app, started_at);
+            }
         }
         "finished" => {
             let (status, video_path) = finalize_session(app, None);
@@ -2065,7 +2506,8 @@ extern "C" fn native_recorder_callback(event: *const c_char, message: *const c_c
                 status.clone(),
             );
             if let Some(video_path) = video_path {
-                if let Err(error) = queue_transcription(&video_path) {
+                let language = settings_language(&app.state::<AppState>().root);
+                if let Err(error) = queue_transcription(&video_path, &language) {
                     let payload = NativeTranscriptionPayload {
                         path: video_path,
                         transcript: None,
@@ -2107,7 +2549,8 @@ extern "C" fn native_recorder_callback(event: *const c_char, message: *const c_c
                             "Using Dicta's local Whisper fallback…",
                             status,
                         );
-                        queue_local_transcription(app, payload.path, "nl".to_string());
+                        let language = settings_language(&app.state::<AppState>().root);
+                        queue_local_transcription(app, payload.path, language);
                     }
                     Err(error) => {
                         emit_recorder_event(app, "transcription_error", &error, status);
@@ -2212,14 +2655,19 @@ pub fn run() {
             download_quality_model,
             create_project,
             link_project,
+            remove_project,
             refresh_project,
             get_app_settings,
             set_shortcut,
             set_cleanup_merged_videos,
+            set_transcription_language,
             cleanup_merged_videos,
+            ensure_recording_poster,
             select_project,
             list_recordings,
             delete_recording,
+            save_timeline_notes,
+            transcribe_voice_note,
             retranscribe_recording,
             start_recording,
             stop_recording,
@@ -2240,7 +2688,7 @@ pub fn run() {
                 MenuItem::with_id(app, "record", "Start / Stop Recording", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Dicta", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &record, &quit])?;
-            let mut tray = TrayIconBuilder::new()
+            let mut tray = TrayIconBuilder::with_id(TRAY_ID)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("Dicta")
@@ -2304,6 +2752,40 @@ mod tests {
             "api-integration-tickets"
         );
         assert_eq!(slugify("✨"), "project");
+    }
+
+    #[test]
+    fn removing_a_project_preserves_its_files_and_archives_registration() {
+        let root = std::env::temp_dir().join(format!(
+            "dicta-remove-project-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let project_path = root.join("demo");
+        let recording_path = project_path.join("recordings/2026-08-14/demo.mp4");
+        fs::create_dir_all(recording_path.parent().unwrap()).unwrap();
+        fs::write(&recording_path, "video").unwrap();
+        let metadata = ProjectFile {
+            id: "demo".to_string(),
+            name: "Demo".to_string(),
+            created_at: Utc::now(),
+            source_path: None,
+        };
+        fs::write(
+            project_path.join("project.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        remove_project_registration(&root, "demo").unwrap();
+
+        assert!(!project_path.join("project.json").exists());
+        assert!(recording_path.is_file());
+        assert!(fs::read_dir(&project_path).unwrap().flatten().any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("project.removed-")));
+        assert!(load_projects(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2381,8 +2863,9 @@ mod tests {
     fn recording_artifacts_stay_beside_the_metadata() {
         let metadata = PathBuf::from("/tmp/dicta/14-25-09.json");
         let artifacts = recording_artifact_paths(&metadata);
-        assert_eq!(artifacts.len(), 6);
+        assert_eq!(artifacts.len(), 7);
         assert!(artifacts.contains(&PathBuf::from("/tmp/dicta/14-25-09.mp4")));
+        assert!(artifacts.contains(&PathBuf::from("/tmp/dicta/14-25-09.poster.jpg")));
         assert!(artifacts.contains(&PathBuf::from("/tmp/dicta/14-25-09.transcript.base.md")));
         assert!(artifacts
             .iter()
@@ -2418,6 +2901,8 @@ mod tests {
             transcription_status: "pending".to_string(),
             transcription_error: None,
             transcription_language: None,
+            poster_path: None,
+            timeline_notes: Vec::new(),
         };
 
         discard_recording_artifacts(&recording);
@@ -2447,15 +2932,21 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         assert_eq!(read_settings(&root).shortcut_id, DEFAULT_SHORTCUT_ID);
         assert!(read_settings(&root).cleanup_merged_videos);
+        assert_eq!(
+            read_settings(&root).transcription_language,
+            DEFAULT_LANGUAGE
+        );
 
         let settings = AppSettings {
             shortcut_id: "option_space".to_string(),
             cleanup_merged_videos: false,
+            transcription_language: "en".to_string(),
         };
         write_settings(&root, &settings).unwrap();
         let restored = read_settings(&root);
         assert_eq!(restored.shortcut_id, "option_space");
         assert!(!restored.cleanup_merged_videos);
+        assert_eq!(restored.transcription_language, "en");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2662,5 +3153,51 @@ mod tests {
             .unwrap()
             .contains(".dicta/"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn whisper_prompts_stay_generic() {
+        assert!(!whisper_prompt("nl").to_lowercase().contains("securex"));
+        assert!(!whisper_prompt("en").to_lowercase().contains("securex"));
+        assert!(whisper_prompt("nl").contains("broncode"));
+    }
+
+    #[test]
+    fn failed_transcripts_are_not_retried() {
+        let recording = Recording {
+            id: "one".into(),
+            project_id: "demo".into(),
+            video_path: "/missing.mp4".into(),
+            metadata_path: "/missing.json".into(),
+            note: String::new(),
+            git_branch: None,
+            started_at: Utc::now(),
+            ended_at: None,
+            duration_seconds: None,
+            size_bytes: None,
+            success: true,
+            transcript: None,
+            transcript_path: None,
+            transcription_status: "failed".into(),
+            transcription_error: Some("no speech".into()),
+            transcription_language: Some("en".into()),
+            poster_path: None,
+            timeline_notes: Vec::new(),
+        };
+        assert!(!should_retry_transcription(&recording));
+        let mut pending = recording.clone();
+        pending.transcription_status = "pending".into();
+        pending.video_path = path_string(&std::env::temp_dir().join("dicta-retry-missing.mp4"));
+        assert!(!should_retry_transcription(&pending));
+    }
+
+    #[test]
+    fn invalid_settings_language_falls_back_to_auto() {
+        let settings = normalize_settings(AppSettings {
+            shortcut_id: "command_shift_r".into(),
+            cleanup_merged_videos: true,
+            transcription_language: "xx".into(),
+        });
+        assert_eq!(settings.transcription_language, DEFAULT_LANGUAGE);
     }
 }

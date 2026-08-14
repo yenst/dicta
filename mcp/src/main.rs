@@ -368,6 +368,7 @@ fn get_recording(arguments: &Value) -> Result<(String, Value), String> {
         "Video: `{}`\nMetadata: `{}`\n",
         recording.video_path, recording.metadata_path
     ));
+    append_timeline_notes(&mut text, &recording, false);
     if let Some(transcript) = recording.transcript.as_deref() {
         text.push_str(&format!("\n## Transcript\n\n{transcript}\n"));
     } else {
@@ -401,6 +402,7 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
     let output_dir = env::temp_dir().join("dicta-mcp-frames");
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("Could not create the temporary frame folder: {error}"))?;
+    prune_frame_cache(&output_dir);
 
     let mut text = format!(
         "# Timestamped frames: {}\n\nRecording ID: `{}`\nVideo: `{}`\n",
@@ -425,6 +427,7 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
         )?;
         let image = fs::read(&output_path)
             .map_err(|error| format!("Could not read extracted frame: {error}"))?;
+        let _ = fs::remove_file(&output_path);
         let timestamp = format_timestamp(actual_seconds);
         let excerpt = approximate_transcript_excerpt(&recording, actual_seconds);
         text.push_str(&format!(
@@ -567,6 +570,24 @@ fn format_timestamp(seconds: f64) -> String {
         format!("{hours:02}:{minutes:02}:{secs:02}.{tenths}")
     } else {
         format!("{minutes:02}:{secs:02}.{tenths}")
+    }
+}
+
+fn prune_frame_cache(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(60 * 60));
+        if stale {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -853,10 +874,15 @@ fn read_transcript(metadata: &Value, metadata_path: &Path) -> Option<String> {
 }
 
 fn relevance(recording: &Recording, query: &str) -> usize {
+    let timeline_note_text = timeline_notes(recording)
+        .filter_map(|note| note.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
     let haystack = format!(
-        "{} {}",
+        "{} {} {}",
         recording.note,
-        recording.transcript.as_deref().unwrap_or_default()
+        recording.transcript.as_deref().unwrap_or_default(),
+        timeline_note_text
     )
     .to_lowercase();
     let query = query.to_lowercase();
@@ -885,6 +911,7 @@ fn append_recording_summary(output: &mut String, recording: &Recording) {
         "  - Video: `{}`\n  - Metadata: `{}`\n",
         recording.video_path, recording.metadata_path
     ));
+    append_timeline_notes(output, recording, true);
     if let Some(transcript) = recording.transcript.as_deref() {
         let preview = transcript
             .split_whitespace()
@@ -914,8 +941,49 @@ fn recording_json(recording: &Recording) -> Value {
         "video_path": recording.video_path,
         "metadata_path": recording.metadata_path,
         "transcript": recording.transcript,
+        "timeline_notes": recording.metadata.get("timeline_notes").cloned().unwrap_or_else(|| json!([])),
         "metadata": recording.metadata
     })
+}
+
+fn timeline_notes(recording: &Recording) -> impl Iterator<Item = &Value> {
+    recording
+        .metadata
+        .get("timeline_notes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+}
+
+fn append_timeline_notes(output: &mut String, recording: &Recording, compact: bool) {
+    let notes = timeline_notes(recording).collect::<Vec<_>>();
+    if notes.is_empty() {
+        return;
+    }
+    if compact {
+        output.push_str(&format!("  - Timeline notes: {}\n", notes.len()));
+        return;
+    }
+    output.push_str("\n## Timeline notes\n");
+    for note in notes {
+        let seconds = note
+            .get("timestamp_seconds")
+            .and_then(Value::as_f64)
+            .unwrap_or_default()
+            .max(0.0)
+            .floor() as u64;
+        let text = note
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("Untitled note")
+            .replace(['\r', '\n'], " ");
+        output.push_str(&format!(
+            "\n- `{:02}:{:02}` — {}\n",
+            seconds / 60,
+            seconds % 60,
+            text
+        ));
+    }
 }
 
 fn display_note(recording: &Recording) -> &str {
@@ -962,10 +1030,16 @@ mod tests {
             video_path: String::new(),
             metadata_path: String::new(),
             transcript: Some("The refresh token endpoint retries once".into()),
-            metadata: json!({}),
+            metadata: json!({
+                "timeline_notes": [{
+                    "timestamp_seconds": 42.0,
+                    "text": "Keep the original request ID"
+                }]
+            }),
         };
         assert!(relevance(&recording, "authentication") > 0);
         assert!(relevance(&recording, "refresh endpoint") > 0);
+        assert!(relevance(&recording, "request ID") > 0);
         assert_eq!(relevance(&recording, "billing"), 0);
     }
 

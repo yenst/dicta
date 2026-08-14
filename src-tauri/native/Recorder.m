@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <Speech/Speech.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
@@ -26,6 +27,7 @@ API_AVAILABLE(macos(15.0))
 
 @interface DictaTranscriptionJob : NSObject
 @property(nonatomic, copy) NSString *inputPath;
+@property(nonatomic, copy) NSString *language;
 @property(nonatomic, assign) RecorderCallback callback;
 @end
 
@@ -54,10 +56,11 @@ API_AVAILABLE(macos(15.0))
     return data == nil ? @"{}" : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 }
 
-- (void)enqueuePath:(NSString *)path callback:(RecorderCallback)callback {
+- (void)enqueuePath:(NSString *)path language:(NSString *)language callback:(RecorderCallback)callback {
     if (path.length == 0) return;
     DictaTranscriptionJob *job = [[DictaTranscriptionJob alloc] init];
     job.inputPath = path;
+    job.language = language.length > 0 ? language : @"auto";
     job.callback = callback;
     [self.queue addObject:job];
     [self startNextIfNeeded];
@@ -80,8 +83,26 @@ API_AVAILABLE(macos(15.0))
     }];
 }
 
+- (NSLocale *)localeForLanguage:(NSString *)language {
+    static NSDictionary<NSString *, NSString *> *identifiers;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        identifiers = @{
+            @"nl": @"nl-NL",
+            @"en": @"en-US",
+            @"fr": @"fr-FR",
+            @"de": @"de-DE",
+            @"es": @"es-ES"
+        };
+    });
+    NSString *identifier = identifiers[language];
+    if (identifier.length == 0) return NSLocale.currentLocale;
+    NSLocale *locale = [NSLocale localeWithLocaleIdentifier:identifier];
+    return locale ?: NSLocale.currentLocale;
+}
+
 - (void)beginRecognition {
-    self.recognizer = [[SFSpeechRecognizer alloc] initWithLocale:NSLocale.currentLocale];
+    self.recognizer = [[SFSpeechRecognizer alloc] initWithLocale:[self localeForLanguage:self.current.language]];
     if (self.recognizer == nil || !self.recognizer.available) {
         [self finishWithError:@"macOS Speech Recognition is currently unavailable."];
         return;
@@ -160,6 +181,13 @@ API_AVAILABLE(macos(15.0))
 }
 
 - (void)prepareScreenCapture {
+    // Ad-hoc rebuilds change the CDHash, so TCC often keeps a stale grant and
+    // SCShareableContent fails without showing the Allow dialog. This is the
+    // API that actually prompts.
+    if (!CGPreflightScreenCaptureAccess()) {
+        CGRequestScreenCaptureAccess();
+    }
+
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO
                                               onScreenWindowsOnly:YES
                                                completionHandler:^(SCShareableContent *content, NSError *error) {
@@ -193,7 +221,7 @@ API_AVAILABLE(macos(15.0))
             config.showMouseClicks = YES;
             config.capturesAudio = YES;
             config.captureMicrophone = YES;
-            config.excludesCurrentProcessAudio = NO;
+            config.excludesCurrentProcessAudio = YES;
             config.sampleRate = 48000;
             config.channelCount = 2;
 
@@ -302,9 +330,12 @@ void dicta_stop(RecorderCallback callback) {
     }
 }
 
-void dicta_transcribe(const char *input_path, RecorderCallback callback) {
+void dicta_transcribe(const char *input_path, const char *language, RecorderCallback callback) {
     NSString *path = [NSString stringWithUTF8String:input_path];
-    dispatch_async(dispatch_get_main_queue(), ^{ [SharedTranscriber() enqueuePath:path callback:callback]; });
+    NSString *spoken = language == NULL ? @"auto" : [NSString stringWithUTF8String:language];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [SharedTranscriber() enqueuePath:path language:spoken callback:callback];
+    });
 }
 
 bool dicta_extract_audio(const char *input_path, const char *output_path) {
@@ -326,35 +357,6 @@ bool dicta_extract_audio(const char *input_path, const char *output_path) {
                                                                       toFormat:targetFormat];
         if (converter == nil) return false;
 
-        AVAudioPCMBuffer *source = [[AVAudioPCMBuffer alloc]
-            initWithPCMFormat:sourceFormat
-                frameCapacity:(AVAudioFrameCount)input.length];
-        if (![input readIntoBuffer:source error:&error] || error != nil) return false;
-
-        double ratio = targetFormat.sampleRate / sourceFormat.sampleRate;
-        AVAudioFrameCount outputCapacity = (AVAudioFrameCount)ceil(source.frameLength * ratio) + 4096;
-        AVAudioPCMBuffer *target = [[AVAudioPCMBuffer alloc]
-            initWithPCMFormat:targetFormat
-                frameCapacity:outputCapacity];
-        __block BOOL suppliedInput = NO;
-        AVAudioConverterOutputStatus status = [converter
-            convertToBuffer:target
-                      error:&error
-         withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount requestedPackets,
-                                             AVAudioConverterInputStatus *inputStatus) {
-            (void)requestedPackets;
-            if (suppliedInput) {
-                *inputStatus = AVAudioConverterInputStatus_EndOfStream;
-                return nil;
-            }
-            suppliedInput = YES;
-            *inputStatus = AVAudioConverterInputStatus_HaveData;
-            return source;
-        }];
-        if (status == AVAudioConverterOutputStatus_Error || error != nil || target.frameLength == 0) {
-            return false;
-        }
-
         AVAudioFile *output = [[AVAudioFile alloc]
             initForWriting:outputURL
                    settings:targetFormat.settings
@@ -362,6 +364,95 @@ bool dicta_extract_audio(const char *input_path, const char *output_path) {
                 interleaved:YES
                       error:&error];
         if (output == nil || error != nil) return false;
-        return [output writeFromBuffer:target error:&error] && error == nil;
+
+        const AVAudioFrameCount inChunk = 16384;
+        double ratio = targetFormat.sampleRate / sourceFormat.sampleRate;
+        AVAudioFrameCount outChunk = (AVAudioFrameCount)ceil(inChunk * ratio) + 64;
+        AVAudioPCMBuffer *source = [[AVAudioPCMBuffer alloc]
+            initWithPCMFormat:sourceFormat
+                frameCapacity:inChunk];
+        AVAudioPCMBuffer *target = [[AVAudioPCMBuffer alloc]
+            initWithPCMFormat:targetFormat
+                frameCapacity:outChunk];
+        BOOL wroteAny = NO;
+
+        while (input.framePosition < input.length) {
+            AVAudioFrameCount remaining = (AVAudioFrameCount)(input.length - input.framePosition);
+            source.frameLength = MIN(inChunk, remaining);
+            if (![input readIntoBuffer:source error:&error] || error != nil) return false;
+
+            __block BOOL suppliedInput = NO;
+            AVAudioConverterOutputStatus status = [converter
+                convertToBuffer:target
+                          error:&error
+             withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount requestedPackets,
+                                                 AVAudioConverterInputStatus *inputStatus) {
+                (void)requestedPackets;
+                if (suppliedInput) {
+                    *inputStatus = AVAudioConverterInputStatus_NoDataNow;
+                    return nil;
+                }
+                suppliedInput = YES;
+                *inputStatus = AVAudioConverterInputStatus_HaveData;
+                return source;
+            }];
+            if (status == AVAudioConverterOutputStatus_Error || error != nil) return false;
+            if (target.frameLength > 0) {
+                if (![output writeFromBuffer:target error:&error] || error != nil) return false;
+                wroteAny = YES;
+            }
+        }
+
+        __block BOOL flushed = NO;
+        AVAudioConverterOutputStatus flushStatus = [converter
+            convertToBuffer:target
+                      error:&error
+         withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount requestedPackets,
+                                             AVAudioConverterInputStatus *inputStatus) {
+            (void)requestedPackets;
+            if (flushed) {
+                *inputStatus = AVAudioConverterInputStatus_EndOfStream;
+                return nil;
+            }
+            flushed = YES;
+            *inputStatus = AVAudioConverterInputStatus_EndOfStream;
+            return nil;
+        }];
+        if (flushStatus != AVAudioConverterOutputStatus_Error && error == nil && target.frameLength > 0) {
+            if (![output writeFromBuffer:target error:&error] || error != nil) return false;
+            wroteAny = YES;
+        }
+
+        return wroteAny;
+    }
+}
+
+bool dicta_extract_poster(const char *input_path, const char *output_path) {
+    @autoreleasepool {
+        if (input_path == NULL || output_path == NULL) return false;
+        NSString *input = [NSString stringWithUTF8String:input_path];
+        NSString *output = [NSString stringWithUTF8String:output_path];
+        if (input.length == 0 || output.length == 0) return false;
+
+        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:input] options:nil];
+        AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+        generator.appliesPreferredTrackTransform = YES;
+        generator.maximumSize = CGSizeMake(640.0, 400.0);
+        generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.35, 600);
+        generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.35, 600);
+
+        CMTime requested = CMTimeMakeWithSeconds(0.8, 600);
+        NSError *error = nil;
+        CGImageRef image = [generator copyCGImageAtTime:requested actualTime:NULL error:&error];
+        if (image == NULL || error != nil) {
+            if (image != NULL) CGImageRelease(image);
+            return false;
+        }
+
+        NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:image];
+        CGImageRelease(image);
+        NSData *jpeg = [bitmap representationUsingType:NSBitmapImageFileTypeJPEG
+                                            properties:@{ NSImageCompressionFactor: @0.72 }];
+        return jpeg != nil && [jpeg writeToFile:output atomically:YES];
     }
 }

@@ -1,14 +1,14 @@
 # Dicta
 
-Dicta is a macOS menu-bar app for recording screen + voice explanations into project folders that can be handed to coding agents as prompt context. Narration is transcribed automatically: Dicta tries macOS Speech Recognition first and falls back to local Whisper when Siri or Dictation is unavailable. A compact model ships inside the app, while **Settings → Transcription** can download and verify the much better multilingual `large-v3-turbo-q5_0` model into `~/Library/Application Support/Dicta/models/`. Dicta can also reuse Ada's full local model. Unfinished recordings are retried when Dicta opens.
+Dicta is a macOS menu-bar app for recording screen + voice explanations into project folders that can be handed to coding agents as prompt context. Narration is transcribed automatically: Dicta tries macOS Speech Recognition first and falls back to local Whisper when Siri or Dictation is unavailable. Both use the default language from **Settings → Transcription** (Auto-detect unless you pick one). A compact model ships inside the app, while the same settings page can download and verify the much better multilingual `large-v3-turbo-q5_0` model into `~/Library/Application Support/Dicta/models/`. Pending (not failed) transcriptions are retried when Dicta opens.
 
 ## MVP workflow
 
 1. Link a Git working-copy folder or select an existing project.
 2. Add a short note describing what the model should learn.
-3. Use **Settings → Shortcuts** to choose a global shortcut, then press it to start recording the main display, microphone, and system audio.
-4. Press the shortcut again to stop.
-5. Use **Copy context** to copy a Markdown index containing the session notes and absolute artifact paths.
+3. Use **Settings → Shortcuts** to choose a global shortcut, then press it to start or stop recording without bringing Dicta forward. The tray title shows ● while recording. The in-app Record button still opens the note sheet.
+4. Press Record in the sheet, or press the shortcut again to stop. Recordings cap at 20 minutes.
+5. Open a packet to play the video and read the transcript. Use **Context** to copy a Markdown index of notes and artifact paths.
 
 Dicta reads the working copy's current branch whenever the app is focused, a project is selected, or recording starts. Linked-project recordings live inside the authorized Git workspace so Codex and other agents can read them without requesting access to an unrelated macOS folder:
 
@@ -18,7 +18,7 @@ Dicta reads the working copy's current branch whenever the app is focused, a pro
 
 Dicta adds `.dicta/` to the repository's local `.git/info/exclude`, so videos never appear in Git status or get committed. Each recording is an `.mp4` plus a `.json` sidecar. Branch names keep their exact value in metadata; `/` is encoded as `__` only in folder names (`feature/oauth` becomes `feature__oauth`). Changing Git branches switches the visible packet shelf and the recording destination.
 
-Merged-video cleanup is enabled by default in **Settings → Storage**. When Dicta refreshes a linked project, it uses Git ancestry to confirm that a recorded branch tip is contained in the repository's default branch, then removes only that branch's `.mp4` files. Transcripts, notes, and metadata remain available to MCP. The active and default branches are never cleaned.
+Merged-video cleanup is available in **Settings → Storage**. Press **Clean** to use Git ancestry to confirm that a recorded branch tip is contained in the repository's default branch, then remove only that branch's `.mp4` files. Transcripts, notes, and metadata remain available to MCP. The active and default branches are never cleaned. Cleanup never runs just because the window regained focus.
 
 When a project is linked after upgrading, Dicta safely copies any existing packets from `~/Documents/Dicta/<project>` into `<repo>/.dicta` and rewrites their evidence paths. The original library is left intact.
 
@@ -65,9 +65,10 @@ The first recording asks for Microphone and Screen Recording permission. macOS m
 - Main display only
 - Four configurable global recording shortcuts
 - MP4 + metadata prompt packets
-- Automatic Git-verified video cleanup for merged branches
+- Manual Git-verified video cleanup for merged branches
 - Downloadable high-quality local transcription model with progress and SHA-1 integrity verification
-- Manual transcription language selection; Dutch uses beam search plus a technical vocabulary prompt
-- Keyframe extraction is not implemented yet
+- Default transcription language in Settings, used for Speech Recognition and the Whisper fallback
+- In-app video playback, transcript view, and poster frames
+- MCP `get_recording_frames` for up to eight timestamped screenshots
 
 Double-tapping bare `Fn` needs a lower-level macOS event tap plus Accessibility/Input Monitoring permission. Dicta currently offers reliable Command, Option, and Control combinations instead.
