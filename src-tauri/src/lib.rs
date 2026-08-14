@@ -2,7 +2,7 @@ use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::hash_map::DefaultHasher,
-    ffi::{CStr, CString},
+    ffi::CStr,
     fs,
     hash::{Hash, Hasher},
     io::{Read, Write},
@@ -11,6 +11,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
+
+mod platform;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -33,22 +35,6 @@ const QUALITY_MODEL_URL: &str =
 const QUALITY_MODEL_SHA1: &str = "e050f7970618a659205450ad97eb95a18d69c9ee";
 const QUALITY_MODEL_DOWNLOAD_BYTES: u64 = 547 * 1024 * 1024;
 const DEFAULT_SHORTCUT_ID: &str = "command_shift_r";
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn dicta_start(
-        output_path: *const c_char,
-        callback: extern "C" fn(*const c_char, *const c_char),
-    );
-    fn dicta_stop(callback: extern "C" fn(*const c_char, *const c_char));
-    fn dicta_transcribe(
-        input_path: *const c_char,
-        language: *const c_char,
-        callback: extern "C" fn(*const c_char, *const c_char),
-    );
-    fn dicta_extract_audio(input_path: *const c_char, output_path: *const c_char) -> bool;
-    fn dicta_extract_poster(input_path: *const c_char, output_path: *const c_char) -> bool;
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ProjectFile {
@@ -1843,16 +1829,7 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
         status.clone(),
     );
 
-    #[cfg(target_os = "macos")]
-    {
-        let path = CString::new(video_path_string)
-            .map_err(|_| "The recording path contains an unsupported character".to_string())?;
-        unsafe { dicta_start(path.as_ptr(), native_recorder_callback) };
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        return Err("Dicta recording currently supports macOS only".to_string());
-    }
+    platform::start_recording(&video_path_string, native_recorder_callback)?;
 
     Ok(status)
 }
@@ -1875,10 +1852,7 @@ fn stop_recording_inner(app: &AppHandle) -> Result<RecorderStatus, String> {
     let status = inner.status.clone();
     drop(inner);
     emit_recorder_event(app, "stopping", "Finalizing recording", status.clone());
-    #[cfg(target_os = "macos")]
-    unsafe {
-        dicta_stop(native_recorder_callback);
-    }
+    platform::stop_recording(native_recorder_callback)?;
     Ok(status)
 }
 
@@ -2212,11 +2186,7 @@ fn local_whisper_transcript(
     let mut hasher = DefaultHasher::new();
     video_path.hash(&mut hasher);
     let wav_path = std::env::temp_dir().join(format!("dicta-{}.wav", hasher.finish()));
-    let input = CString::new(video_path)
-        .map_err(|_| "The recording path contains an unsupported character".to_string())?;
-    let output = CString::new(path_string(&wav_path))
-        .map_err(|_| "The temporary audio path contains an unsupported character".to_string())?;
-    let extracted = unsafe { dicta_extract_audio(input.as_ptr(), output.as_ptr()) };
+    let extracted = platform::extract_audio(video_path, &path_string(&wav_path));
     if !extracted {
         return Err("Dicta could not extract narration from the recording".to_string());
     }
@@ -2429,21 +2399,7 @@ fn retranscribe_recording(
 }
 
 fn queue_transcription(video_path: &str, language: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let path = CString::new(video_path)
-            .map_err(|_| "The transcription path contains an unsupported character".to_string())?;
-        let spoken = CString::new(language)
-            .unwrap_or_else(|_| CString::new(DEFAULT_LANGUAGE).expect("default language is ascii"));
-        unsafe { dicta_transcribe(path.as_ptr(), spoken.as_ptr(), native_recorder_callback) };
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = video_path;
-        let _ = language;
-        Err("Automatic transcription currently supports macOS only".to_string())
-    }
+    platform::transcribe(video_path, language, native_recorder_callback)
 }
 
 fn should_retry_transcription(recording: &Recording) -> bool {
@@ -2500,17 +2456,8 @@ fn extract_poster(video_path: &str) -> Option<String> {
     if !Path::new(video_path).is_file() {
         return None;
     }
-    let input = CString::new(video_path).ok()?;
-    let output = CString::new(path_string(&poster)).ok()?;
-    #[cfg(target_os = "macos")]
-    {
-        if unsafe { dicta_extract_poster(input.as_ptr(), output.as_ptr()) } && poster.is_file() {
-            return Some(path_string(&poster));
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (input, output);
+    if platform::extract_poster(video_path, &path_string(&poster)) && poster.is_file() {
+        return Some(path_string(&poster));
     }
     None
 }

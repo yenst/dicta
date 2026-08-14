@@ -2,27 +2,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    env,
-    ffi::CString,
-    fs,
+    env, fs,
     io::{self, BufRead, Write},
-    os::raw::c_char,
     path::{Path, PathBuf},
     process::Command,
 };
 
+mod platform;
+
 const SERVER_NAME: &str = "dicta";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn dicta_mcp_extract_frame(
-        input_path: *const c_char,
-        requested_seconds: f64,
-        output_path: *const c_char,
-        actual_seconds: *mut f64,
-    ) -> bool;
-}
 
 enum ToolResult {
     Text {
@@ -430,7 +419,7 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
     for requested_seconds in timestamps {
         let millis = (requested_seconds * 1000.0).round() as u64;
         let output_path = output_dir.join(format!("{safe_id}-{millis:010}.jpg"));
-        let actual_seconds = extract_frame(
+        let actual_seconds = platform::extract_frame(
             Path::new(&recording.video_path),
             requested_seconds,
             &output_path,
@@ -580,37 +569,6 @@ fn matching_transcript_timestamps(recording: &Recording, query: &str, limit: usi
         .take(limit)
         .map(|(_, segment)| (segment.start_seconds + segment.end_seconds) / 2.0)
         .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn extract_frame(video_path: &Path, seconds: f64, output_path: &Path) -> Result<f64, String> {
-    let input = CString::new(video_path.to_string_lossy().as_bytes())
-        .map_err(|_| "The video path contains an unsupported character".to_string())?;
-    let output = CString::new(output_path.to_string_lossy().as_bytes())
-        .map_err(|_| "The frame path contains an unsupported character".to_string())?;
-    let mut actual_seconds = seconds;
-    let extracted = unsafe {
-        dicta_mcp_extract_frame(
-            input.as_ptr(),
-            seconds,
-            output.as_ptr(),
-            &mut actual_seconds,
-        )
-    };
-    if extracted && output_path.is_file() {
-        Ok(actual_seconds)
-    } else {
-        Err(format!(
-            "Could not extract a screenshot at {} from `{}`",
-            format_timestamp(seconds),
-            video_path.display()
-        ))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn extract_frame(_video_path: &Path, _seconds: f64, _output_path: &Path) -> Result<f64, String> {
-    Err("Timestamped frame extraction currently supports macOS only".to_string())
 }
 
 fn transcript_excerpt(recording: &Recording, seconds: f64) -> (Option<String>, &'static str) {

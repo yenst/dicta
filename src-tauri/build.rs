@@ -2,7 +2,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         cc::Build::new()
-            .file("native/Recorder.m")
+            .files(["native/Capture.m", "native/Speech.m", "native/Media.m"])
             .flag("-fobjc-arc")
             .flag("-fblocks")
             .flag("-mmacosx-version-min=15.0")
@@ -15,7 +15,10 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreVideo");
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=AppKit");
-        println!("cargo:rerun-if-changed=native/Recorder.m");
+        println!("cargo:rerun-if-changed=native/DictaNative.h");
+        println!("cargo:rerun-if-changed=native/Capture.m");
+        println!("cargo:rerun-if-changed=native/Speech.m");
+        println!("cargo:rerun-if-changed=native/Media.m");
     }
 
     tauri_build::build()
