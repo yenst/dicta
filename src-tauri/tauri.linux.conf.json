@@ -1,4 +1,20 @@
 {
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Dicta",
+        "width": 1080,
+        "height": 865,
+        "minWidth": 820,
+        "minHeight": 620,
+        "resizable": true,
+        "center": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ]
+  },
   "bundle": {
     "targets": ["deb", "appimage"]
   }

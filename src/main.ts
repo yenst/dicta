@@ -272,7 +272,7 @@ function render(): void {
   app.innerHTML = `
     <main class="app-shell">
       <aside class="sidebar">
-        <div class="sidebar-chrome-space" data-tauri-drag-region></div>
+        ${isMacPlatform ? `<div class="sidebar-chrome-space" data-tauri-drag-region></div>` : ""}
         <div class="sidebar-brand" data-tauri-drag-region>
           <img src="${dictaAppIconUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
           <strong data-tauri-drag-region>Dicta</strong>
@@ -288,7 +288,7 @@ function render(): void {
               <button class="project-more" type="button" data-project-menu="${escapeHtml(item.id)}" aria-label="Project actions for ${escapeHtml(item.name)}" ${isBusy ? "disabled" : ""}><i class="ph ph-dots-three"></i></button>
               ${openProjectMenu === item.id ? `
                 <div class="packet-menu project-menu">
-                  <button data-project-reveal="${escapeHtml(item.source_path ?? item.storage_path)}"><i class="ph ph-folder-open"></i>Reveal in Finder</button>
+                  <button data-project-reveal="${escapeHtml(item.source_path ?? item.storage_path)}"><i class="ph ph-folder-open"></i>${isMacPlatform ? "Reveal in Finder" : "Show in Files"}</button>
                   <button data-project-copy-path="${escapeHtml(item.path)}"><i class="ph ph-copy"></i>Copy path</button>
                   <span class="packet-menu-divider"></span>
                   <button class="danger" data-remove-project="${escapeHtml(item.id)}"><i class="ph ph-minus-circle"></i>Remove from Dicta</button>
@@ -506,7 +506,7 @@ function render(): void {
                       <p>Whisper large-v3-turbo Q5 delivers much better Dutch, names, and technical vocabulary.</p>
                       <div class="model-facts">
                         <span><i class="ph ph-hard-drives"></i>${formatBytes(modelStatus.download_size_bytes)}</span>
-                        <span><i class="ph ph-lock-key"></i>Runs entirely on your Mac</span>
+                        <span><i class="ph ph-lock-key"></i>Runs entirely on your ${platformName}</span>
                         <span><i class="ph ph-wifi-high"></i>Internet needed once</span>
                       </div>
                       ${modelDownloading || modelDownload ? `
@@ -1013,7 +1013,7 @@ function startBrowserDictation(): void {
   const speechWindow = window as unknown as { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor };
   const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
   if (!Recognition) {
-    showToast("Voice dictation is unavailable on this Mac");
+    showToast(`Voice dictation is unavailable on this ${platformName}`);
     return;
   }
 
@@ -1514,7 +1514,7 @@ async function refreshActiveProject(showFeedback = false): Promise<void> {
 
 async function reveal(path?: string): Promise<void> {
   if (!path) return;
-  if (isTauri) await invoke("reveal_path", { path }); else showToast("Finder opens in the desktop app");
+  if (isTauri) await invoke("reveal_path", { path }); else showToast(isMacPlatform ? "Finder opens in the desktop app" : "Files opens in the desktop app");
 }
 
 async function startRecording(note: string): Promise<void> {

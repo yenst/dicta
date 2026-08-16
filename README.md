@@ -27,12 +27,12 @@ When a project is linked after upgrading, Dicta safely copies any existing packe
 Requirements on every platform: Rust, Node.js, and the native Tauri 2 build dependencies.
 
 - macOS: macOS 15+ and Xcode Command Line Tools.
-- Linux: FFmpeg, PulseAudio/PipeWire-Pulse, and a supported capture backend. KDE Plasma Wayland uses Spectacle, wlroots Wayland uses `wf-recorder`, and X11 uses FFmpeg's `x11grab`. Clipboard actions additionally need `wl-clipboard`, `xclip`, or `xsel`.
+- Linux: FFmpeg, PulseAudio/PipeWire-Pulse, and a supported capture backend. KDE Plasma Wayland uses Spectacle, wlroots Wayland uses `wf-recorder`, and X11 uses FFmpeg's `x11grab`. Clipboard actions additionally need `wl-clipboard`, `xclip`, or `xsel`. In-app playback needs GStreamer's libav plugin (`gst-libav`).
 
 On Arch/CachyOS, install the common runtime and build packages with:
 
 ```bash
-sudo pacman -S --needed base-devel cmake clang curl ffmpeg gst-plugins-good nodejs npm rust shaderc vulkan-headers vulkan-icd-loader webkit2gtk-4.1 libayatana-appindicator librsvg wl-clipboard
+sudo pacman -S --needed base-devel cmake clang curl ffmpeg gst-libav gst-plugins-good nodejs npm rust shaderc vulkan-headers vulkan-icd-loader webkit2gtk-4.1 libayatana-appindicator librsvg wl-clipboard xorg-xrandr
 ```
 
 For wlroots compositors such as Sway or Hyprland, also install `wf-recorder`. On KDE Wayland, Plasma asks you to click a window on the screen you want to record after starting; Dicta then records that entire screen. On X11, `xrandr` is used to detect the desktop size. Linux capture can be forced with `DICTA_SCREEN_RECORDER=spectacle`, `wf-recorder`, or `ffmpeg-x11` when auto-detection is not appropriate.

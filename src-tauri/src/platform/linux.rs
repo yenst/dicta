@@ -147,7 +147,22 @@ fn start_ffmpeg_x11(output_path: &Path) -> Result<RecorderProcess, String> {
 
 fn start_wf_recorder(output_path: &Path) -> Result<RecorderProcess, String> {
     let mut command = silent_command("wf-recorder");
-    command.args(["--audio", "--file"]);
+    command.args([
+        "--audio",
+        "--codec",
+        "libx264",
+        "--codec-param",
+        "preset=ultrafast",
+        "--codec-param",
+        "crf=23",
+        "--pixel-format",
+        "yuv420p",
+        "--audio-codec",
+        "aac",
+        "--framerate",
+        "30",
+        "--file",
+    ]);
     command.arg(output_path);
     let child = command
         .spawn()
