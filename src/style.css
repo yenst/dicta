@@ -629,7 +629,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   height: 36px;
   flex: 0 0 auto;
   object-fit: contain;
-  filter: drop-shadow(0 5px 12px rgba(8, 35, 77, .18));
+  filter: none;
 }
 
 .sidebar-brand strong {
@@ -1078,6 +1078,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 
 [data-theme="dark"] .sidebar-brand {
   color: #f5f6f8;
+}
+
+[data-theme="dark"] .sidebar-brand img {
+  filter: invert(1);
 }
 
 [data-theme="dark"] .sidebar-section-label,

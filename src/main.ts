@@ -1,6 +1,6 @@
 import "@phosphor-icons/web/regular";
 import "./style.css";
-import dictaAppIconUrl from "../src-tauri/icons/icon.png";
+import dictaMarkUrl from "./assets/dicta-mark.png";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -274,7 +274,7 @@ function render(): void {
       <aside class="sidebar">
         ${isMacPlatform ? `<div class="sidebar-chrome-space" data-tauri-drag-region></div>` : ""}
         <div class="sidebar-brand" data-tauri-drag-region>
-          <img src="${dictaAppIconUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+          <img src="${dictaMarkUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
           <strong data-tauri-drag-region>Dicta</strong>
         </div>
         <div class="sidebar-section-label">Projects</div>
