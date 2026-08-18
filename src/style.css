@@ -1174,3 +1174,38 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   .workspace-footer .footer-button { width: 40px; justify-content: center; overflow: hidden; padding: 9px; font-size: 0; }
   .footer-actions { gap: 5px; }
 }
+
+/* Recording destinations and project browsing */
+.project-heading, .project-switcher-wrap { position: relative; min-width: 0; }
+.project-header { z-index: 24; overflow: visible; }
+.project-switcher { max-width: 100%; display: inline-flex; align-items: center; gap: 9px; padding: 3px 7px 3px 0; border: 0; border-radius: 8px; color: #202226; background: transparent; cursor: pointer; font-size: 26px; font-weight: 650; letter-spacing: -.025em; }
+.project-switcher:hover { background: rgba(93, 103, 119, .07); }
+.project-switcher > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-switcher > i { flex: 0 0 auto; color: #858b95; font-size: 15px; }
+.project-switcher-menu { position: absolute; z-index: 80; top: calc(100% + 8px); left: -8px; width: min(330px, calc(100vw - 340px)); min-width: 250px; max-height: 330px; overflow: auto; padding: 6px; border: 1px solid rgba(53, 59, 69, .15); border-radius: 11px; background: rgba(255, 255, 255, .97); box-shadow: 0 18px 48px rgba(31, 36, 45, .2); backdrop-filter: blur(20px); }
+.project-switcher-menu button { width: 100%; min-height: 49px; display: grid; grid-template-columns: 24px minmax(0, 1fr) 20px; align-items: center; gap: 8px; padding: 7px 9px; border: 0; border-radius: 8px; color: #30343a; background: transparent; cursor: pointer; text-align: left; }
+.project-switcher-menu button:hover, .project-switcher-menu button[aria-selected="true"] { background: #edf3fd; }
+.project-switcher-menu button > i { color: #6381ae; font-size: 17px; }
+.project-switcher-menu button > span { min-width: 0; display: grid; gap: 2px; }
+.project-switcher-menu strong, .project-switcher-menu small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-switcher-menu strong { font-size: 13px; }
+.project-switcher-menu small { color: #858b94; font-size: 11px; }
+.modal select { width: 100%; min-height: 41px; padding: 8px 34px 8px 11px; border: 1px solid #cfd3d9; border-radius: 8px; color: #202226; background: #fff; font-size: 14px; }
+.recording-scope-row, .recording-scope-note { display: flex; align-items: center; gap: 12px; margin: 13px 0 17px; padding: 12px 13px; border: 1px solid #dfe3e9; border-radius: 9px; background: #f7f8fa; }
+.recording-scope-row > div { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.recording-scope-row strong { color: #383d44; font-size: 12px; }
+.recording-scope-row span, .recording-scope-note span { color: #777e88; font-size: 11px; line-height: 1.35; }
+.recording-scope-note i { color: #6381ae; font-size: 18px; }
+.review-context { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 7px 10px; border: 1px solid #d3d7dd; border-radius: 7px; color: #555c66; background: #fff; cursor: pointer; font-weight: 600; }
+.review-context:hover { color: var(--blue); border-color: #aec6ea; background: #f5f8fe; }
+.review-title code { color: #7d8490; font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-theme="dark"] .project-switcher { color: #f1f2f4; }
+[data-theme="dark"] .project-switcher:hover { background: rgba(255, 255, 255, .06); }
+[data-theme="dark"] .project-switcher-menu { border-color: #3b414a; background: rgba(27, 31, 37, .98); box-shadow: 0 18px 48px rgba(0, 0, 0, .45); }
+[data-theme="dark"] .project-switcher-menu button { color: #e5e7ea; }
+[data-theme="dark"] .project-switcher-menu button:hover, [data-theme="dark"] .project-switcher-menu button[aria-selected="true"] { background: #253247; }
+[data-theme="dark"] .modal select { color: #efeff1; border-color: #3d4047; background: #141518; }
+[data-theme="dark"] .recording-scope-row, [data-theme="dark"] .recording-scope-note { border-color: #393d44; background: #191b1f; }
+[data-theme="dark"] .recording-scope-row strong { color: #e3e5e8; }
+[data-theme="dark"] .recording-scope-row span, [data-theme="dark"] .recording-scope-note span { color: #969ca5; }
+[data-theme="dark"] .review-context { color: #d4d7dc; border-color: #3e4249; background: #202227; }

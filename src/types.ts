@@ -20,6 +20,7 @@ export interface Recording {
   video_path: string;
   metadata_path: string;
   note: string;
+  recording_scope: "branch" | "repository" | "unprojected";
   git_branch: string | null;
   started_at: string;
   ended_at: string | null;
@@ -93,6 +94,7 @@ export interface ModelDownloadEvent {
 export interface AppSettings {
   shortcut_id: string;
   cleanup_merged_videos: boolean;
+  branch_locking: boolean;
   transcription_language: string;
 }
 

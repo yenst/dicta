@@ -14,7 +14,7 @@ use std::{
 
 mod platform;
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State,
 };
@@ -30,6 +30,7 @@ const MAX_RECORDING_SECONDS: u64 = 20 * 60;
 const TRAY_ID: &str = "dicta";
 const ALLOWED_LANGUAGES: [&str; 6] = ["auto", "nl", "en", "fr", "de", "es"];
 const DEFAULT_LANGUAGE: &str = "auto";
+const UNPROJECTED_ID: &str = "__unprojected__";
 const QUALITY_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 const QUALITY_MODEL_SHA1: &str = "e050f7970618a659205450ad97eb95a18d69c9ee";
@@ -70,6 +71,8 @@ struct Recording {
     video_path: String,
     metadata_path: String,
     note: String,
+    #[serde(default = "default_recording_scope")]
+    recording_scope: String,
     #[serde(default)]
     git_branch: Option<String>,
     started_at: DateTime<Utc>,
@@ -177,6 +180,8 @@ struct AppSettings {
     shortcut_id: String,
     #[serde(default = "enabled_by_default")]
     cleanup_merged_videos: bool,
+    #[serde(default = "enabled_by_default")]
+    branch_locking: bool,
     #[serde(default = "default_language")]
     transcription_language: String,
 }
@@ -186,6 +191,7 @@ impl Default for AppSettings {
         Self {
             shortcut_id: default_shortcut_id(),
             cleanup_merged_videos: true,
+            branch_locking: true,
             transcription_language: default_language(),
         }
     }
@@ -271,6 +277,10 @@ fn default_shortcut_id() -> String {
 
 fn enabled_by_default() -> bool {
     true
+}
+
+fn default_recording_scope() -> String {
+    "branch".to_string()
 }
 
 fn default_language() -> String {
@@ -787,7 +797,20 @@ fn slugify(name: &str) -> String {
 }
 
 fn project_dir(root: &Path, project_id: &str) -> PathBuf {
-    root.join(project_id)
+    if project_id == UNPROJECTED_ID {
+        root.join("unprojected")
+    } else {
+        root.join(project_id)
+    }
+}
+
+fn unprojected_metadata() -> ProjectFile {
+    ProjectFile {
+        id: UNPROJECTED_ID.to_string(),
+        name: "General".to_string(),
+        created_at: DateTime::<Utc>::from(std::time::UNIX_EPOCH),
+        source_path: None,
+    }
 }
 
 fn linked_storage_dir(metadata: &ProjectFile) -> Option<PathBuf> {
@@ -1065,8 +1088,12 @@ fn active_recording_root(
     metadata: &ProjectFile,
 ) -> Result<(Option<String>, PathBuf), String> {
     if metadata.source_path.is_some() {
-        let (branch, path) = linked_branch_dir(root, metadata)?;
-        Ok((Some(branch), path))
+        if read_settings(root).branch_locking {
+            let (branch, path) = linked_branch_dir(root, metadata)?;
+            Ok((Some(branch), path))
+        } else {
+            Ok((None, project_storage_dir(root, metadata)))
+        }
     } else {
         Ok((None, project_dir(root, &metadata.id)))
     }
@@ -1242,6 +1269,9 @@ fn project_view(root: &Path, metadata: ProjectFile) -> Project {
 }
 
 fn read_project(root: &Path, project_id: &str) -> Result<ProjectFile, String> {
+    if project_id == UNPROJECTED_ID {
+        return Ok(unprojected_metadata());
+    }
     let path = project_dir(root, project_id).join("project.json");
     let content = fs::read_to_string(&path)
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
@@ -1301,6 +1331,7 @@ fn load_projects(root: &Path) -> Vec<Project> {
         projects.push(project_view(root, metadata));
     }
     projects.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    projects.insert(0, project_view(root, unprojected_metadata()));
     projects
 }
 
@@ -1320,7 +1351,11 @@ fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
 }
 
 #[tauri::command]
-fn create_project(name: String, state: State<'_, AppState>) -> Result<Project, String> {
+fn create_project(
+    app: AppHandle,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<Project, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Project name cannot be empty".to_string());
@@ -1346,11 +1381,17 @@ fn create_project(name: String, state: State<'_, AppState>) -> Result<Project, S
         .lock()
         .map_err(|_| "Recorder state is unavailable".to_string())?;
     inner.status.active_project_id = Some(id.clone());
+    drop(inner);
+    let _ = sync_tray_menu(&app);
     Ok(project_view(&state.root, metadata))
 }
 
 #[tauri::command]
-fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Project, String> {
+fn link_project(
+    app: AppHandle,
+    source_path: String,
+    state: State<'_, AppState>,
+) -> Result<Project, String> {
     let selected = PathBuf::from(source_path);
     if !selected.is_dir() {
         return Err("Choose an existing project folder".to_string());
@@ -1367,6 +1408,8 @@ fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Proje
                 .lock()
                 .map_err(|_| "Recorder state is unavailable".to_string())?;
             inner.status.active_project_id = Some(existing.id.clone());
+            drop(inner);
+            let _ = sync_tray_menu(&app);
             return Ok(project_view(&state.root, metadata));
         }
     }
@@ -1410,10 +1453,15 @@ fn link_project(source_path: String, state: State<'_, AppState>) -> Result<Proje
         .lock()
         .map_err(|_| "Recorder state is unavailable".to_string())?;
     inner.status.active_project_id = Some(id);
+    drop(inner);
+    let _ = sync_tray_menu(&app);
     Ok(project_view(&state.root, metadata))
 }
 
 fn remove_project_registration(root: &Path, project_id: &str) -> Result<(), String> {
+    if project_id == UNPROJECTED_ID {
+        return Err("General cannot be removed".to_string());
+    }
     if project_id.is_empty()
         || Path::new(project_id)
             .file_name()
@@ -1440,7 +1488,11 @@ fn remove_project_registration(root: &Path, project_id: &str) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn remove_project(project_id: String, state: State<'_, AppState>) -> Result<(), String> {
+fn remove_project(
+    app: AppHandle,
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     {
         let inner = state
             .inner
@@ -1461,6 +1513,9 @@ fn remove_project(project_id: String, state: State<'_, AppState>) -> Result<(), 
     if inner.status.active_project_id.as_deref() == Some(project_id.as_str()) {
         inner.status.active_project_id = None;
     }
+    drop(inner);
+    ensure_default_project_selection(&app);
+    let _ = sync_tray_menu(&app);
     Ok(())
 }
 
@@ -1515,6 +1570,25 @@ fn set_cleanup_merged_videos(
 }
 
 #[tauri::command]
+fn set_branch_locking(enabled: bool, state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let inner = state
+        .inner
+        .lock()
+        .map_err(|_| "Recorder state is unavailable".to_string())?;
+    if matches!(
+        inner.status.phase,
+        RecordingPhase::Preparing | RecordingPhase::Recording | RecordingPhase::Stopping
+    ) {
+        return Err("Recording scope cannot change during a recording".to_string());
+    }
+    drop(inner);
+    let mut settings = read_settings(&state.root);
+    settings.branch_locking = enabled;
+    write_settings(&state.root, &settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 fn set_transcription_language(
     language: String,
     state: State<'_, AppState>,
@@ -1538,7 +1612,11 @@ fn cleanup_merged_videos(
 }
 
 #[tauri::command]
-fn select_project(project_id: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+fn select_project(
+    app: AppHandle,
+    project_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     if let Some(id) = project_id.as_ref() {
         let _ = read_project(&state.root, id)?;
     }
@@ -1553,6 +1631,8 @@ fn select_project(project_id: Option<String>, state: State<'_, AppState>) -> Res
         return Err("Cannot change projects while recording".to_string());
     }
     inner.status.active_project_id = project_id;
+    drop(inner);
+    let _ = sync_tray_menu(&app);
     Ok(())
 }
 
@@ -1814,6 +1894,13 @@ fn start_recording_inner(app: &AppHandle, note: String) -> Result<RecorderStatus
         video_path: video_path_string.clone(),
         metadata_path: path_string(&metadata_path),
         note,
+        recording_scope: if project_id == UNPROJECTED_ID {
+            "unprojected".to_string()
+        } else if git_branch.is_some() {
+            "branch".to_string()
+        } else {
+            "repository".to_string()
+        },
         git_branch,
         started_at,
         ended_at: None,
@@ -1944,11 +2031,7 @@ fn build_context(project_id: String, state: State<'_, AppState>) -> Result<Strin
     for recording in recordings.iter().take(50) {
         output.push_str(&format!(
             "- **{}** ({})\n  - Video: `{}`\n  - Metadata: `{}`\n{}",
-            if recording.note.is_empty() {
-                "Untitled context"
-            } else {
-                &recording.note
-            },
+            &recording.id,
             recording
                 .started_at
                 .with_timezone(&Local)
@@ -1973,6 +2056,32 @@ fn build_context(project_id: String, state: State<'_, AppState>) -> Result<Strin
     }
     output.push_str("\nUse the transcript as primary guidance and the original video when visual evidence is necessary. Ask if any referenced detail is ambiguous.\n");
     Ok(output)
+}
+
+#[tauri::command]
+fn build_recording_context(
+    project_id: String,
+    recording_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let project = project_view(&state.root, read_project(&state.root, &project_id)?);
+    let recording = load_recordings(&state.root, &project_id)?
+        .into_iter()
+        .find(|recording| recording.id == recording_id)
+        .ok_or_else(|| format!("Recording not found: {recording_id}"))?;
+    let scope = match recording.recording_scope.as_str() {
+        "branch" => recording
+            .git_branch
+            .as_deref()
+            .map(|branch| format!("branch `{branch}`"))
+            .unwrap_or_else(|| "the recorded branch".to_string()),
+        "repository" => "the repository (all branches)".to_string(),
+        _ => "the unprojected Dicta library".to_string(),
+    };
+    Ok(format!(
+        "Within Dicta project `{}`, look at recording `{}` from {}. Use its transcript as primary guidance and inspect timestamped frames when visual evidence matters.",
+        project.name, recording.id, scope
+    ))
 }
 
 #[tauri::command]
@@ -2028,6 +2137,117 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_default_project_selection(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if inner.status.active_project_id.is_some() {
+        return;
+    }
+    let projects = load_projects(&state.root);
+    inner.status.active_project_id = projects
+        .iter()
+        .find(|project| project.id != UNPROJECTED_ID)
+        .or_else(|| projects.first())
+        .map(|project| project.id.clone());
+}
+
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let state = app.state::<AppState>();
+    let inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let active_project_id = inner.status.active_project_id.clone();
+    let recording = matches!(
+        inner.status.phase,
+        RecordingPhase::Preparing | RecordingPhase::Recording | RecordingPhase::Stopping
+    );
+    let record_label = if matches!(inner.status.phase, RecordingPhase::Recording) {
+        "Stop Recording"
+    } else {
+        "Start Recording"
+    };
+    drop(inner);
+
+    let projects = load_projects(&state.root);
+    let project_menu = Submenu::with_id(app, "projects", "Projects", !projects.is_empty())?;
+    for project in projects {
+        let item = CheckMenuItem::with_id(
+            app,
+            format!("project:{}", project.id),
+            project.name,
+            !recording,
+            active_project_id.as_deref() == Some(project.id.as_str()),
+            None::<&str>,
+        )?;
+        project_menu.append(&item)?;
+    }
+
+    let show = MenuItem::with_id(app, "show", "Show Dicta", true, None::<&str>)?;
+    let record = MenuItem::with_id(app, "record", record_label, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Dicta", true, None::<&str>)?;
+    Menu::with_items(app, &[&show, &project_menu, &record, &quit])
+}
+
+fn sync_tray_menu(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        tray.set_menu(Some(build_tray_menu(app)?))?;
+    }
+    Ok(())
+}
+
+fn select_project_from_tray(app: &AppHandle, project_id: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _ = read_project(&state.root, project_id)?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "Recorder state is unavailable".to_string())?;
+    if matches!(
+        inner.status.phase,
+        RecordingPhase::Preparing | RecordingPhase::Recording | RecordingPhase::Stopping
+    ) {
+        return Err("Cannot change projects while recording".to_string());
+    }
+    inner.status.active_project_id = Some(project_id.to_string());
+    drop(inner);
+    let _ = sync_tray_menu(app);
+    let _ = app.emit("project-selected", project_id.to_string());
+    Ok(())
+}
+
+fn handle_tray_menu_event(app: &AppHandle, id: &str) {
+    match id {
+        "show" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+        "record" => toggle_from_shortcut(app),
+        "quit" => app.exit(0),
+        _ => {
+            if let Some(project_id) = id.strip_prefix("project:") {
+                if let Err(error) = select_project_from_tray(app, project_id) {
+                    let state = app.state::<AppState>();
+                    let status = {
+                        let mut inner = state
+                            .inner
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        inner.status.last_error = Some(error.clone());
+                        inner.status.clone()
+                    };
+                    emit_recorder_event(app, "error", &error, status);
+                }
+            }
+        }
+    }
+}
+
 fn emit_recorder_event(app: &AppHandle, event: &str, message: &str, status: RecorderStatus) {
     sync_tray(app, &status.phase);
     let _ = app.emit(
@@ -2053,6 +2273,7 @@ fn sync_tray(app: &AppHandle, phase: &RecordingPhase) {
         }));
         let _ = tray.set_title(Some(if recording { "●" } else { "" }));
     }
+    let _ = sync_tray_menu(app);
 }
 
 fn schedule_recording_limit(app: &AppHandle, started_at: DateTime<Utc>) {
@@ -2814,6 +3035,7 @@ pub fn run() {
             get_app_settings,
             set_shortcut,
             set_cleanup_merged_videos,
+            set_branch_locking,
             set_transcription_language,
             cleanup_merged_videos,
             ensure_recording_poster,
@@ -2827,11 +3049,13 @@ pub fn run() {
             stop_recording,
             reveal_path,
             build_context,
+            build_recording_context,
             copy_to_clipboard
         ])
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
             let _ = install_mcp_binary(app.handle());
+            ensure_default_project_selection(app.handle());
             let root = app.state::<AppState>().root.clone();
             queue_pending_transcriptions(&root);
             #[cfg(target_os = "macos")]
@@ -2840,26 +3064,12 @@ pub fn run() {
                 eprintln!("Dicta could not register its global shortcut: {error}");
             }
 
-            let show = MenuItem::with_id(app, "show", "Show Dicta", true, None::<&str>)?;
-            let record =
-                MenuItem::with_id(app, "record", "Start / Stop Recording", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Dicta", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &record, &quit])?;
+            let menu = build_tray_menu(app.handle())?;
             let mut tray = TrayIconBuilder::with_id(TRAY_ID)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("Dicta")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                    "record" => toggle_from_shortcut(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
+                .on_menu_event(|app, event| handle_tray_menu_event(app, event.id.as_ref()))
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -2944,7 +3154,8 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with("project.removed-")));
-        assert!(load_projects(&root).is_empty());
+        assert_eq!(load_projects(&root).len(), 1);
+        assert_eq!(load_projects(&root)[0].id, UNPROJECTED_ID);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3050,6 +3261,7 @@ mod tests {
             video_path: path_string(&video_path),
             metadata_path: path_string(&metadata_path),
             note: String::new(),
+            recording_scope: "branch".to_string(),
             git_branch: Some("securex-quota".to_string()),
             started_at: Utc::now(),
             ended_at: None,
@@ -3101,12 +3313,14 @@ mod tests {
         let settings = AppSettings {
             shortcut_id: "option_space".to_string(),
             cleanup_merged_videos: false,
+            branch_locking: false,
             transcription_language: "en".to_string(),
         };
         write_settings(&root, &settings).unwrap();
         let restored = read_settings(&root);
         assert_eq!(restored.shortcut_id, "option_space");
         assert!(!restored.cleanup_merged_videos);
+        assert!(!restored.branch_locking);
         assert_eq!(restored.transcription_language, "en");
         fs::remove_dir_all(root).unwrap();
     }
@@ -3117,6 +3331,7 @@ mod tests {
         let settings = normalize_settings(AppSettings {
             shortcut_id: "command_shift_r".to_string(),
             cleanup_merged_videos: true,
+            branch_locking: true,
             transcription_language: "auto".to_string(),
         });
         assert_eq!(settings.shortcut_id, "alt_shift_r");
@@ -3234,6 +3449,7 @@ mod tests {
         ));
         let repository = root.join("peepel");
         let storage = root.join("storage");
+        fs::create_dir_all(&storage).unwrap();
         assert!(std::process::Command::new("git")
             .args(["init", "-b", "main"])
             .arg(&repository)
@@ -3261,6 +3477,22 @@ mod tests {
         let (branch, path) = active_recording_root(&storage, &project).unwrap();
         assert_eq!(branch.as_deref(), Some("feature/oauth"));
         assert_eq!(path, repository.join(".dicta/branches/feature__oauth"));
+
+        write_settings(
+            &storage,
+            &AppSettings {
+                branch_locking: false,
+                ..AppSettings::default()
+            },
+        )
+        .unwrap();
+        let (branch, path) = active_recording_root(&storage, &project).unwrap();
+        assert_eq!(branch, None);
+        assert_eq!(path, repository.join(".dicta"));
+
+        let (branch, path) = active_recording_root(&storage, &unprojected_metadata()).unwrap();
+        assert_eq!(branch, None);
+        assert_eq!(path, storage.join("unprojected"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3377,6 +3609,7 @@ mod tests {
             video_path: path_string(&video_path),
             metadata_path: path_string(&metadata_path),
             note: String::new(),
+            recording_scope: "branch".into(),
             git_branch: Some("main".into()),
             started_at: Utc::now(),
             ended_at: Some(Utc::now()),
@@ -3425,6 +3658,7 @@ mod tests {
             video_path: "/missing.mp4".into(),
             metadata_path: "/missing.json".into(),
             note: String::new(),
+            recording_scope: "repository".into(),
             git_branch: None,
             started_at: Utc::now(),
             ended_at: None,
@@ -3452,6 +3686,7 @@ mod tests {
         let settings = normalize_settings(AppSettings {
             shortcut_id: "command_shift_r".into(),
             cleanup_merged_videos: true,
+            branch_locking: true,
             transcription_language: "xx".into(),
         });
         assert_eq!(settings.transcription_language, DEFAULT_LANGUAGE);

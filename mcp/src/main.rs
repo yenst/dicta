@@ -103,7 +103,7 @@ fn handle_request(request: &Value, id: Value) -> Value {
                     "protocolVersion": requested_protocol,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
-                    "instructions": "Dicta contains screen-and-voice guidance recorded for Git projects and branches. When the user asks to check Dicta, prior guidance, recordings, or project context, call get_project_guidance with the current workspace path. Use the current Git branch unless the user names another branch. Treat results as supporting context and inspect referenced repository files before changing code. Timestamped transcript segments identify when spoken guidance occurred. When the transcript refers to something visible on screen or visual evidence is needed, call get_recording_frames with explicit timestamps or transcript_query. All Dicta tools are read-only."
+                    "instructions": "Dicta contains screen-and-voice guidance recorded for Git projects. Recordings may apply to the whole repository or only one branch. When the user asks to check Dicta, prior guidance, recordings, or project context, call get_project_guidance with the current workspace path. Use the current Git branch unless the user names another branch; repository-wide recordings are included automatically. Treat results as supporting context and inspect referenced repository files before changing code. Timestamped transcript segments identify when spoken guidance occurred. When the transcript refers to something visible on screen or visual evidence is needed, call get_recording_frames with explicit timestamps or transcript_query. All Dicta tools are read-only."
                 }),
             )
         }
@@ -176,7 +176,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "get_project_guidance",
-            "description": "Get the most relevant Dicta guidance recorded for a Git project and branch. Use this first when the user says to check Dicta, prior recordings, project guidance, or previously explained context. Pass the current workspace/repository path; branch defaults to the repository's currently checked-out branch.",
+            "description": "Get the most relevant Dicta guidance for a Git project. Repository-wide recordings and recordings for the selected branch are included. Use this first when the user says to check Dicta, prior recordings, project guidance, or previously explained context.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -191,7 +191,7 @@ fn tools() -> Value {
         },
         {
             "name": "list_recordings",
-            "description": "List Dicta recordings for a Git project and branch in newest-first order. Use this to browse available captured guidance before opening a specific recording.",
+            "description": "List repository-wide and branch-specific Dicta recordings for a Git project in newest-first order.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -205,7 +205,7 @@ fn tools() -> Value {
         },
         {
             "name": "get_recording",
-            "description": "Read one Dicta recording's complete note, metadata, available transcript, and evidence paths. Obtain recording_id from get_project_guidance or list_recordings.",
+            "description": "Read one Dicta recording's complete note, metadata, transcript, and evidence paths. Repository and branch recordings are resolved first; an exact ID can also resolve from General.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -261,7 +261,7 @@ fn get_project_guidance(arguments: &Value) -> Result<(String, Value), String> {
     let context = resolve_context(arguments)?;
     let query = string_arg(arguments, "query");
     let limit = limit_arg(arguments, 8, 25);
-    let mut recordings = load_recordings(&context.branch_path)?;
+    let mut recordings = load_context_recordings(&context)?;
     let mut query_fallback = false;
     if let Some(query) = query.as_deref().filter(|query| !query.trim().is_empty()) {
         recordings.sort_by_key(|recording| std::cmp::Reverse(relevance(recording, query)));
@@ -314,14 +314,14 @@ fn get_project_guidance(arguments: &Value) -> Result<(String, Value), String> {
 fn list_project_recordings(arguments: &Value) -> Result<(String, Value), String> {
     let context = resolve_context(arguments)?;
     let limit = limit_arg(arguments, 25, 100);
-    let mut recordings = load_recordings(&context.branch_path)?;
+    let mut recordings = load_context_recordings(&context)?;
     recordings.truncate(limit);
     let mut text = format!(
         "# Dicta recordings: {} · {}\n\n",
         context.project.name, context.branch
     );
     if recordings.is_empty() {
-        text.push_str("No recordings found for this branch.\n");
+        text.push_str("No repository-wide or branch recordings were found.\n");
     } else {
         for recording in &recordings {
             append_recording_summary(&mut text, recording);
@@ -343,21 +343,14 @@ fn get_recording(arguments: &Value) -> Result<(String, Value), String> {
     let recording_id = string_arg(arguments, "recording_id")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "recording_id is required".to_string())?;
-    let recording = load_recordings(&context.branch_path)?
-        .into_iter()
-        .find(|recording| recording.id == recording_id)
-        .ok_or_else(|| {
-            format!(
-                "Recording `{recording_id}` was not found on branch `{}`",
-                context.branch
-            )
-        })?;
+    let (recording, project_name, scope_label) =
+        find_recording_for_context(&context, &recording_id)?;
     let mut text = format!(
-        "# {}\n\nRecording ID: `{}`\nProject: `{}`\nGit branch: `{}`\n",
+        "# {}\n\nRecording ID: `{}`\nProject: `{}`\nScope: `{}`\n",
         display_note(&recording),
         recording.id,
-        context.project.name,
-        context.branch
+        project_name,
+        scope_label
     );
     if let Some(started_at) = recording.started_at {
         text.push_str(&format!("Recorded: `{started_at}`\n"));
@@ -379,15 +372,7 @@ fn get_recording_frames(arguments: &Value) -> Result<ToolResult, String> {
     let recording_id = string_arg(arguments, "recording_id")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "recording_id is required".to_string())?;
-    let recording = load_recordings(&context.branch_path)?
-        .into_iter()
-        .find(|recording| recording.id == recording_id)
-        .ok_or_else(|| {
-            format!(
-                "Recording `{recording_id}` was not found on branch `{}`",
-                context.branch
-            )
-        })?;
+    let (recording, _, _) = find_recording_for_context(&context, &recording_id)?;
     if !Path::new(&recording.video_path).is_file() {
         return Err(format!(
             "The recording video is missing at `{}`",
@@ -711,6 +696,7 @@ struct Context {
     repo_root: PathBuf,
     branch: String,
     branch_path: PathBuf,
+    recording_paths: Vec<PathBuf>,
     project: ProjectFile,
 }
 
@@ -728,7 +714,7 @@ fn resolve_context(arguments: &Value) -> Result<Context, String> {
     };
     let local_storage = repo_root.join(".dicta");
     let local_project_path = local_storage.join("project.json");
-    let (project, branch_path) = if local_project_path.is_file() {
+    let (project, branch_path, recording_paths) = if local_project_path.is_file() {
         let content = fs::read_to_string(&local_project_path).map_err(|error| {
             format!(
                 "Dicta found repository-local storage at `{}`, but could not read it: {error}",
@@ -740,7 +726,8 @@ fn resolve_context(arguments: &Value) -> Result<Context, String> {
         let branch_path = local_storage
             .join("branches")
             .join(branch_folder_name(&branch));
-        (project, branch_path)
+        let recording_paths = vec![local_storage.clone(), branch_path.clone()];
+        (project, branch_path, recording_paths)
     } else {
         let storage_root = dicta_root()?;
         let project = find_project(&storage_root, &repo_root).map_err(|legacy_error| {
@@ -753,14 +740,62 @@ fn resolve_context(arguments: &Value) -> Result<Context, String> {
             .join(&project.id)
             .join("branches")
             .join(branch_folder_name(&branch));
-        (project, branch_path)
+        let repository_path = storage_root.join(&project.id);
+        let recording_paths = vec![repository_path, branch_path.clone()];
+        (project, branch_path, recording_paths)
     };
     Ok(Context {
         repo_root,
         branch,
         branch_path,
+        recording_paths,
         project,
     })
+}
+
+fn load_context_recordings(context: &Context) -> Result<Vec<Recording>, String> {
+    let mut recordings = Vec::new();
+    for path in &context.recording_paths {
+        recordings.extend(load_recordings(path)?);
+    }
+    recordings.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    recordings.dedup_by(|left, right| left.id == right.id);
+    Ok(recordings)
+}
+
+fn find_recording_for_context(
+    context: &Context,
+    recording_id: &str,
+) -> Result<(Recording, String, String), String> {
+    if let Some(recording) = load_context_recordings(context)?
+        .into_iter()
+        .find(|recording| recording.id == recording_id)
+    {
+        let scope = recording
+            .metadata
+            .get("recording_scope")
+            .and_then(Value::as_str)
+            .unwrap_or("branch");
+        let scope_label = if scope == "repository" {
+            "repository-wide".to_string()
+        } else {
+            format!("branch {}", context.branch)
+        };
+        return Ok((recording, context.project.name.clone(), scope_label));
+    }
+
+    let unprojected_path = dicta_root()?.join("unprojected");
+    if let Some(recording) = load_recordings(&unprojected_path)?
+        .into_iter()
+        .find(|recording| recording.id == recording_id)
+    {
+        return Ok((recording, "General".to_string(), "General".to_string()));
+    }
+
+    Err(format!(
+        "Recording `{recording_id}` was not found for repository branch `{}` or in General",
+        context.branch
+    ))
 }
 
 fn dicta_root() -> Result<PathBuf, String> {
@@ -985,11 +1020,10 @@ fn relevance(recording: &Recording, query: &str) -> usize {
 }
 
 fn append_recording_summary(output: &mut String, recording: &Recording) {
-    output.push_str(&format!(
-        "\n- **{}**\n  - Recording ID: `{}`\n",
-        display_note(recording),
-        recording.id
-    ));
+    output.push_str(&format!("\n- **{}**\n", display_note(recording)));
+    if !recording.note.trim().is_empty() {
+        output.push_str(&format!("  - Note: {}\n", recording.note.trim()));
+    }
     if let Some(started_at) = recording.started_at {
         output.push_str(&format!("  - Recorded: `{started_at}`\n"));
     }
@@ -1111,11 +1145,7 @@ fn append_timeline_notes(output: &mut String, recording: &Recording, compact: bo
 }
 
 fn display_note(recording: &Recording) -> &str {
-    if recording.note.trim().is_empty() {
-        "Untitled recording"
-    } else {
-        &recording.note
-    }
+    &recording.id
 }
 
 fn string_arg(arguments: &Value, key: &str) -> Option<String> {

@@ -19,6 +19,8 @@ let status: Status = emptyStatus();
 let elapsedTimer: number | null = null;
 let createProjectOpen = false;
 let startSheetOpen = false;
+let projectPickerOpen = false;
+let recordingTargetProjectId: string | null = null;
 let openPacketMenu: string | null = null;
 let openProjectMenu: string | null = null;
 let removeProjectId: string | null = null;
@@ -51,7 +53,7 @@ let mcpRestarting = false;
 let mcpStatus: McpStatus = { installed: false, codex_configured: false, executable_path: "", message: "Connect Dicta to Codex" };
 let activeView: "project" | "settings" = "project";
 let settingsSection: "appearance" | "shortcuts" | "transcription" | "storage" = "appearance";
-let appSettings: AppSettings = { shortcut_id: defaultShortcutId, cleanup_merged_videos: true, transcription_language: "auto" };
+let appSettings: AppSettings = { shortcut_id: defaultShortcutId, cleanup_merged_videos: true, branch_locking: true, transcription_language: "auto" };
 let cleanupRunning = false;
 let cleanupSummary: CleanupSummary | null = null;
 type ThemePreference = "system" | "light" | "dark";
@@ -175,6 +177,24 @@ function activeProject(): Project | undefined {
   return projects.find((project) => project.id === selectedProjectId);
 }
 
+function recordingTargetProject(): Project | undefined {
+  return projects.find((project) => project.id === recordingTargetProjectId);
+}
+
+function recordingTitle(recording: Recording): string {
+  return recording.id;
+}
+
+function recordingSubtitle(recording: Recording): string {
+  return recording.note.trim() || transcriptExcerpt(recording);
+}
+
+function scopeLabel(project: Project | undefined, branchLocking = appSettings.branch_locking): string {
+  if (!project || project.id === "__unprojected__") return "General";
+  if (!branchLocking) return "Repository-wide";
+  return project.git_branch ?? "Current branch";
+}
+
 function compactPath(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, "~");
 }
@@ -254,9 +274,12 @@ function render(): void {
     ? previousPacketSection.scrollTop
     : 0;
   const project = activeProject();
+  const targetProject = recordingTargetProject() ?? project;
   const isBusy = ["preparing", "recording", "stopping"].includes(status.phase);
-  const branchUnavailable = Boolean(project?.is_git && (!project.git_branch || project.git_error));
-  const buttonDisabled = !project || branchUnavailable || status.phase === "preparing" || status.phase === "stopping";
+  const branchUnavailable = Boolean(appSettings.branch_locking && project?.is_git && (!project.git_branch || project.git_error));
+  const buttonDisabled = status.phase === "recording"
+    ? false
+    : !project || branchUnavailable || status.phase === "preparing" || status.phase === "stopping";
   const recordingToDelete = recordings.find((recording) => recording.id === deleteRecordingId);
   const projectToRemove = projects.find((item) => item.id === removeProjectId);
   const latestRecording = recordings[0];
@@ -281,12 +304,12 @@ function render(): void {
         <nav class="project-list" aria-label="Projects">
           ${projects.length === 0 ? `<div class="sidebar-empty">No projects yet</div>` : projects.map((item) => `
             <div class="project-entry ${openProjectMenu === item.id ? "menu-open" : ""}">
-              <button class="project-item ${activeView === "project" && item.id === selectedProjectId ? "selected" : ""}" data-project-id="${escapeHtml(item.id)}" ${isBusy ? "disabled" : ""}>
-                <i class="ph ph-folder" aria-hidden="true"></i>
-                <span class="project-label"><span>${escapeHtml(item.name)}</span><small>${escapeHtml(item.git_branch ?? (item.is_git ? "Git unavailable" : "Unlinked project"))}</small></span>
+              <button class="project-item ${activeView === "project" && item.id === selectedProjectId ? "selected" : ""}" data-project-id="${escapeHtml(item.id)}">
+                <i class="ph ${item.id === "__unprojected__" ? "ph-tray" : "ph-folder"}" aria-hidden="true"></i>
+                <span class="project-label"><span>${escapeHtml(item.name)}</span>${item.id === "__unprojected__" ? "" : `<small>${escapeHtml(appSettings.branch_locking ? item.git_branch ?? "Git unavailable" : "Repository-wide")}</small>`}</span>
               </button>
-              <button class="project-more" type="button" data-project-menu="${escapeHtml(item.id)}" aria-label="Project actions for ${escapeHtml(item.name)}" ${isBusy ? "disabled" : ""}><i class="ph ph-dots-three"></i></button>
-              ${openProjectMenu === item.id ? `
+              ${item.id !== "__unprojected__" ? `<button class="project-more" type="button" data-project-menu="${escapeHtml(item.id)}" aria-label="Project actions for ${escapeHtml(item.name)}" ${isBusy ? "disabled" : ""}><i class="ph ph-dots-three"></i></button>` : ""}
+              ${item.id !== "__unprojected__" && openProjectMenu === item.id ? `
                 <div class="packet-menu project-menu">
                   <button data-project-reveal="${escapeHtml(item.source_path ?? item.storage_path)}"><i class="ph ph-folder-open"></i>${isMacPlatform ? "Reveal in Finder" : "Show in Files"}</button>
                   <button data-project-copy-path="${escapeHtml(item.path)}"><i class="ph ph-copy"></i>Copy path</button>
@@ -299,9 +322,9 @@ function render(): void {
         <section class="sidebar-recents" aria-labelledby="recents-title">
           <div class="sidebar-section-label" id="recents-title">Recents</div>
           ${latestRecording ? `
-            <button class="recent-item" data-open-packet="${escapeHtml(latestRecording.id)}" title="Open ${escapeHtml(latestRecording.note || "recent recording")}">
+            <button class="recent-item" data-open-packet="${escapeHtml(latestRecording.id)}" title="Open ${escapeHtml(latestRecording.id)}">
               <i class="ph ph-clock" aria-hidden="true"></i>
-              <span>${escapeHtml(latestRecording.note || "Untitled recording")}</span>
+              <span>${escapeHtml(recordingTitle(latestRecording))}</span>
             </button>
           ` : `
             <div class="recent-item recent-item-empty">
@@ -323,14 +346,19 @@ function render(): void {
       <section class="workspace">
         <header class="project-header" data-tauri-drag-region>
           <div class="project-heading" data-tauri-drag-region>
-            <h1 data-tauri-drag-region>${escapeHtml(project?.name ?? "Choose a project")}</h1>
+            <div class="project-switcher-wrap">
+              <button class="project-switcher" id="project-switcher" type="button" aria-haspopup="listbox" aria-expanded="${projectPickerOpen}">
+                <span>${escapeHtml(project?.name ?? "Choose a project")}</span><i class="ph ph-caret-down"></i>
+              </button>
+              ${projectPickerOpen ? `<div class="project-switcher-menu" role="listbox">${projects.map((item) => `<button type="button" role="option" aria-selected="${item.id === selectedProjectId}" data-switch-project="${escapeHtml(item.id)}"><i class="ph ${item.id === "__unprojected__" ? "ph-tray" : "ph-folder"}"></i><span><strong>${escapeHtml(item.name)}</strong>${item.id === "__unprojected__" ? "" : `<small>${escapeHtml(appSettings.branch_locking ? item.git_branch ?? "Git unavailable" : "Repository-wide")}</small>`}</span>${item.id === selectedProjectId ? '<i class="ph ph-check"></i>' : ""}</button>`).join("")}</div>` : ""}
+            </div>
             <div class="project-context">
               <button class="path-button" id="copy-path" ${project ? "" : "disabled"} title="Copy working-copy path">
                 <i class="ph ph-folder" aria-hidden="true"></i>
                 <span>${project ? escapeHtml(compactPath(project.path)) : "Link a Git project to begin"}</span>
                 ${project ? '<i class="ph ph-copy" aria-hidden="true"></i>' : ""}
               </button>
-              ${project ? `<button class="branch-pill ${branchUnavailable ? "unavailable" : ""}" id="refresh-branch" title="Refresh current Git branch"><i class="ph ph-git-branch"></i><span>${escapeHtml(project.git_branch ?? "Git unavailable")}</span><i class="ph ph-arrows-clockwise refresh-icon"></i></button>` : ""}
+              ${project ? `<button class="branch-pill ${branchUnavailable ? "unavailable" : ""}" id="refresh-branch" title="Refresh recording scope"><i class="ph ${project.id === "__unprojected__" ? "ph-tray" : appSettings.branch_locking ? "ph-git-branch" : "ph-git-fork"}"></i><span>${escapeHtml(scopeLabel(project))}</span>${project.is_git && appSettings.branch_locking ? '<i class="ph ph-arrows-clockwise refresh-icon"></i>' : ""}</button>` : ""}
             </div>
           </div>
           <div class="header-clock" aria-label="${escapeHtml(`${clock.date}, ${clock.time}`)}" data-tauri-drag-region>
@@ -352,7 +380,7 @@ function render(): void {
                 <div class="empty-state">
                   <i class="ph ph-monitor-play" aria-hidden="true"></i>
                   <h3>Your first explanation starts here</h3>
-                  <p>Record your screen and voice. This packet will be saved only for ${escapeHtml(project?.git_branch ?? "the current Git branch")}.</p>
+                  <p>Record your screen and voice. This packet will be saved to ${escapeHtml(scopeLabel(project))}.</p>
                   <button id="empty-record" ${buttonDisabled ? "disabled" : ""}>Record</button>
                 </div>
               ` : recordingGroups.map((group) => `
@@ -360,16 +388,16 @@ function render(): void {
                 ${group.items.map((recording) => {
                   const packet = packetStatus(recording);
                   const poster = mediaSrc(recording.poster_path);
-                  const excerpt = transcriptExcerpt(recording);
+                  const subtitle = recordingSubtitle(recording);
                   return `
                   <div class="packet-row" role="row" data-recording-id="${escapeHtml(recording.id)}">
-                    <button class="thumbnail-button" data-open-packet="${escapeHtml(recording.id)}" aria-label="Play ${escapeHtml(recording.note || "recording")}">
+                    <button class="thumbnail-button" data-open-packet="${escapeHtml(recording.id)}" aria-label="Play ${escapeHtml(recording.id)}">
                       ${poster ? `<img src="${escapeHtml(poster)}" alt="" />` : `<span class="thumbnail-fallback"><i class="ph ph-monitor-play" aria-hidden="true"></i></span>`}
                       <span class="play-overlay"><i class="ph ph-play" aria-hidden="true"></i></span>
                     </button>
                     <button class="packet-name" data-open-packet="${escapeHtml(recording.id)}">
-                      <strong>${escapeHtml(recording.note || "Untitled recording")}</strong>
-                      ${excerpt ? `<small>${escapeHtml(excerpt)}</small>` : recording.transcription_status === "complete" ? "" : `<small>${escapeHtml(packet.title)}</small>`}
+                      <strong>${escapeHtml(recordingTitle(recording))}</strong>
+                      ${subtitle ? `<small>${escapeHtml(subtitle)}</small>` : recording.transcription_status === "complete" ? "" : `<small>${escapeHtml(packet.title)}</small>`}
                     </button>
                     <span class="packet-meta">${formatDuration(recording.duration_seconds)}</span>
                     <span class="packet-meta">${formatDate(recording.started_at)}</span>
@@ -379,6 +407,7 @@ function render(): void {
                       ${openPacketMenu === recording.id ? `
                         <div class="packet-menu">
                           <button data-open-packet="${escapeHtml(recording.id)}"><i class="ph ph-play"></i>Open</button>
+                          <button data-copy-recording-context="${escapeHtml(recording.id)}"><i class="ph ph-copy"></i>Copy Context</button>
                           <button data-transcribe="${escapeHtml(recording.id)}" ${recording.success ? "" : "disabled"}><i class="ph ph-waveform"></i>Transcribe</button>
                           <span class="packet-menu-divider"></span>
                           <button data-reveal="${escapeHtml(recording.video_path)}"><i class="ph ph-folder-open"></i>Reveal</button>
@@ -408,7 +437,7 @@ function render(): void {
         </div>
 
         <footer class="workspace-footer">
-          <button class="footer-button" id="copy-context" ${recordings.length === 0 ? "disabled" : ""}><i class="ph ph-copy"></i>Context</button>
+          <span></span>
           <div class="footer-actions">
             <button class="footer-button mcp-button ${mcpStatus.codex_configured ? "connected" : ""}" id="connect-mcp" ${mcpRestarting ? "disabled" : ""}><i class="ph ${mcpRestarting ? "ph-spinner-gap mcp-spin" : mcpStatus.codex_configured ? "ph-arrow-clockwise" : "ph-plug"}"></i>${mcpRestarting ? "Restarting…" : mcpStatus.codex_configured ? "Restart" : "Connect"}</button>
             <button class="footer-button" id="reveal-project" ${project?.branch_path || project?.storage_path ? "" : "disabled"}><i class="ph ph-folder-open"></i>Reveal</button>
@@ -552,7 +581,15 @@ function render(): void {
                 <section class="settings-section-block" id="storage-settings">
                   <div class="settings-content-heading">
                     <h2>Storage</h2>
-                    <p>Keep prompt context useful while removing large files after a branch has landed.</p>
+                    <p>Choose how Git recordings are scoped and remove large files after a branch has landed.</p>
+                  </div>
+                  <div class="settings-group" aria-label="Git recording scope">
+                    <div class="settings-group-label">Recording scope</div>
+                    <article class="preference-row">
+                      <div class="preference-icon"><i class="ph ph-git-branch"></i></div>
+                      <div class="preference-copy"><strong>Lock recordings to Git branches</strong><p>Turn this off to make new project recordings available from every branch in the repository.</p></div>
+                      <button class="switch ${appSettings.branch_locking ? "on" : ""}" type="button" id="branch-lock-settings-toggle" role="switch" aria-checked="${appSettings.branch_locking}" aria-label="Lock recordings to Git branches"><span></span></button>
+                    </article>
                   </div>
                   <div class="settings-group" aria-label="Merged branch cleanup">
                     <div class="settings-group-label">Cleanup</div>
@@ -563,7 +600,7 @@ function render(): void {
                     </article>
                     <div class="cleanup-action-row">
                       <div>${cleanupSummary ? `<strong>${escapeHtml(cleanupSummary.message)}</strong><small>${cleanupSummary.freed_bytes > 0 ? `${formatBytes(cleanupSummary.freed_bytes)} freed · ` : ""}${cleanupSummary.cleaned_branches.length > 0 ? cleanupSummary.cleaned_branches.map(escapeHtml).join(", ") : "Checks the selected project"}</small>` : `<strong>Manual</strong><small>Videos are removed only when you press Clean. Transcripts stay for agents.</small>`}</div>
-                      <button class="secondary-action" id="cleanup-now" ${!selectedProjectId || !appSettings.cleanup_merged_videos || cleanupRunning ? "disabled" : ""}><i class="ph ${cleanupRunning ? "ph-spinner-gap mcp-spin" : "ph-broom"}"></i>${cleanupRunning ? "Checking…" : "Clean"}</button>
+                      <button class="secondary-action" id="cleanup-now" ${!activeProject()?.is_git || !appSettings.cleanup_merged_videos || cleanupRunning ? "disabled" : ""}><i class="ph ${cleanupRunning ? "ph-spinner-gap mcp-spin" : "ph-broom"}"></i>${cleanupRunning ? "Checking…" : "Clean"}</button>
                     </div>
                   </div>
                 </section>
@@ -593,7 +630,13 @@ function render(): void {
           <button class="modal-close" type="button" data-close-start aria-label="Close"><i class="ph ph-x"></i></button>
           <span class="record-symbol sheet-symbol"><span></span></span>
           <h2>Start a prompt packet</h2>
-          <p>Dicta will capture your main display, microphone, and system audio into <strong>${escapeHtml(project?.git_branch ?? "the current branch")}</strong>. Recordings stop automatically at 20 minutes.</p>
+          <p>Choose where this recording belongs. You can keep browsing other projects while capture runs.</p>
+          <label>Save to
+            <select id="recording-project">
+              ${projects.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === targetProject?.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          ${targetProject?.is_git ? `<div class="recording-scope-row"><div><strong>Lock to Git branch</strong><span>${appSettings.branch_locking ? `Only <b>${escapeHtml(targetProject.git_branch ?? "the current branch")}</b>` : "Available across every branch in this repository"}</span></div><button class="switch ${appSettings.branch_locking ? "on" : ""}" id="branch-lock-toggle" type="button" role="switch" aria-checked="${appSettings.branch_locking}"><span></span></button></div>` : `<div class="recording-scope-note"><i class="ph ph-tray"></i><span>General</span></div>`}
           <label>What should Codex understand? <span>Optional</span><textarea id="session-note" rows="3" placeholder="Authentication edge cases, webhook behavior…">${escapeHtml(sessionNote || lastSessionNote)}</textarea></label>
           <div class="source-summary"><span><i class="ph ph-monitor"></i>Main display</span><span><i class="ph ph-microphone"></i>Microphone</span><span><i class="ph ph-speaker-high"></i>System audio</span><span><i class="ph ph-timer"></i>20 min max</span></div>
           <div class="modal-actions"><button type="button" class="secondary" data-close-start>Cancel</button><button type="submit" class="primary record-primary">Record</button></div>
@@ -629,7 +672,7 @@ function render(): void {
           <div class="delete-icon"><i class="ph ph-trash"></i></div>
           <h2>Delete recording?</h2>
           <p>This removes its video, transcript, notes, and metadata from this branch. This cannot be undone.</p>
-          <div class="delete-summary"><strong>${escapeHtml(recordingToDelete.note || "Untitled recording")}</strong><span>${formatDuration(recordingToDelete.duration_seconds)} · ${formatDate(recordingToDelete.started_at)}</span></div>
+          <div class="delete-summary"><strong>${escapeHtml(recordingTitle(recordingToDelete))}</strong><span>${formatDuration(recordingToDelete.duration_seconds)} · ${formatDate(recordingToDelete.started_at)}</span></div>
           <div class="modal-actions"><button type="button" class="secondary" data-close-delete>Cancel</button><button type="submit" class="danger">Delete</button></div>
         </form>
       </div>
@@ -663,10 +706,11 @@ function render(): void {
         <header class="review-header">
           <div class="review-title">
             <button class="review-icon-button" type="button" data-close-viewer aria-label="Back to recordings"><i class="ph ph-arrow-left"></i></button>
-            <div><h2>${escapeHtml(viewing.note || "Untitled recording")}</h2><p>${formatDate(viewing.started_at)} · ${formatDuration(viewing.duration_seconds)}</p></div>
+            <div><h2>${escapeHtml(recordingTitle(viewing))}</h2><p>${formatDate(viewing.started_at)} · ${formatDuration(viewing.duration_seconds)}</p></div>
           </div>
           <div class="review-header-actions">
             <span><i class="ph ph-note-pencil"></i>${timelineNotes.length} note${timelineNotes.length === 1 ? "" : "s"}</span>
+            <button class="review-context" type="button" data-copy-recording-context="${escapeHtml(viewing.id)}"><i class="ph ph-copy"></i>Context</button>
             <button class="review-icon-button" id="review-fullscreen" type="button" aria-label="Enter full screen" title="Enter full screen"><i class="ph ph-corners-out"></i></button>
             <button class="review-done" type="button" data-close-viewer>Done</button>
           </div>
@@ -1072,19 +1116,40 @@ function stopPropagationOnModal(event: Event): void {
   event.stopPropagation();
 }
 
+async function updateBranchLocking(enabled: boolean): Promise<void> {
+  appSettings = isTauri
+    ? await invoke<AppSettings>("set_branch_locking", { enabled })
+    : { ...appSettings, branch_locking: enabled };
+  if (isTauri) {
+    const updated = await invoke<Bootstrap>("bootstrap");
+    projects = updated.projects;
+  }
+  await refreshRecordings();
+}
+
+async function browseProject(projectId: string): Promise<void> {
+  activeView = "project";
+  selectedProjectId = projectId;
+  projectPickerOpen = false;
+  if (!status.active_project_id || !["preparing", "recording", "stopping"].includes(status.phase)) {
+    status.active_project_id = projectId;
+    if (isTauri) await invoke("select_project", { projectId });
+  }
+  if (isTauri) await refreshActiveProject();
+  await refreshRecordings();
+  openPacketMenu = null;
+  openProjectMenu = null;
+  render();
+}
+
 function bindEvents(): void {
   document.querySelectorAll<HTMLButtonElement>(".project-item").forEach((button) => button.addEventListener("click", async () => {
-    activeView = "project";
-    selectedProjectId = button.dataset.projectId ?? null;
-    status.active_project_id = selectedProjectId;
-    if (isTauri) {
-      await invoke("select_project", { projectId: selectedProjectId });
-      await refreshActiveProject();
-    }
-    await refreshRecordings();
-    openPacketMenu = null;
-    openProjectMenu = null;
-    render();
+    if (button.dataset.projectId) await browseProject(button.dataset.projectId);
+  }));
+
+  document.querySelector("#project-switcher")?.addEventListener("click", () => { projectPickerOpen = !projectPickerOpen; render(); });
+  document.querySelectorAll<HTMLButtonElement>("[data-switch-project]").forEach((button) => button.addEventListener("click", async () => {
+    if (button.dataset.switchProject) await browseProject(button.dataset.switchProject);
   }));
 
   document.querySelectorAll<HTMLButtonElement>("[data-project-menu]").forEach((button) => button.addEventListener("click", (event) => {
@@ -1203,6 +1268,17 @@ function bindEvents(): void {
       render();
     }
   });
+  document.querySelector("#branch-lock-settings-toggle")?.addEventListener("click", async () => {
+    const enabled = !appSettings.branch_locking;
+    try {
+      await updateBranchLocking(enabled);
+      render();
+      showToast(enabled ? "New recordings are branch-specific" : "New recordings are repository-wide");
+    } catch (error) {
+      status.last_error = String(error);
+      render();
+    }
+  });
   document.querySelector("#cleanup-now")?.addEventListener("click", async () => {
     if (!selectedProjectId || cleanupRunning) return;
     cleanupRunning = true;
@@ -1236,7 +1312,7 @@ function bindEvents(): void {
   document.querySelectorAll("[data-close-modal]").forEach((node) => node.addEventListener("click", () => { createProjectOpen = false; render(); }));
 
   const openStart = () => {
-    if (!activeProject()) return;
+    recordingTargetProjectId = selectedProjectId ?? "__unprojected__";
     if (!sessionNote) sessionNote = lastSessionNote;
     startSheetOpen = true;
     render();
@@ -1250,13 +1326,27 @@ function bindEvents(): void {
   document.querySelector<HTMLTextAreaElement>("#session-note")?.addEventListener("input", (event) => {
     sessionNote = (event.target as HTMLTextAreaElement).value;
   });
+  document.querySelector<HTMLSelectElement>("#recording-project")?.addEventListener("change", (event) => {
+    recordingTargetProjectId = (event.target as HTMLSelectElement).value;
+    render();
+  });
+  document.querySelector("#branch-lock-toggle")?.addEventListener("click", async () => {
+    const enabled = !appSettings.branch_locking;
+    try {
+      await updateBranchLocking(enabled);
+      render();
+    } catch (error) {
+      status.last_error = String(error);
+      render();
+    }
+  });
   document.querySelector("#start-recording-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const note = document.querySelector<HTMLTextAreaElement>("#session-note")?.value.trim() ?? "";
     sessionNote = note;
     lastSessionNote = note;
     startSheetOpen = false;
-    await startRecording(note);
+    await startRecording(note, recordingTargetProjectId ?? "__unprojected__");
   });
   document.querySelectorAll("[data-close-start]").forEach((node) => node.addEventListener("click", () => { startSheetOpen = false; render(); }));
 
@@ -1267,11 +1357,17 @@ function bindEvents(): void {
   document.querySelector("#refresh-branch")?.addEventListener("click", async () => {
     await refreshActiveProject(true);
   });
-  document.querySelector("#copy-context")?.addEventListener("click", async () => {
-    if (!selectedProjectId) return;
-    const context = isTauri ? await invoke<string>("build_context", { projectId: selectedProjectId }) : mockContext();
-    await copyText(context); showToast("Project context copied");
-  });
+  document.querySelectorAll<HTMLButtonElement>("[data-copy-recording-context]").forEach((button) => button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    if (!selectedProjectId || !button.dataset.copyRecordingContext) return;
+    const recordingId = button.dataset.copyRecordingContext;
+    const context = isTauri
+      ? await invoke<string>("build_recording_context", { projectId: selectedProjectId, recordingId })
+      : `Within Dicta project \`${activeProject()?.name}\`, look at recording \`${recordingId}\`.`;
+    await copyText(context);
+    openPacketMenu = null;
+    showToast(`Context copied for ${recordingId}`);
+  }));
   document.querySelector("#reveal-project")?.addEventListener("click", () => {
     const project = activeProject();
     reveal(project?.branch_path ?? project?.storage_path);
@@ -1517,16 +1613,17 @@ async function reveal(path?: string): Promise<void> {
   if (isTauri) await invoke("reveal_path", { path }); else showToast(isMacPlatform ? "Finder opens in the desktop app" : "Files opens in the desktop app");
 }
 
-async function startRecording(note: string): Promise<void> {
+async function startRecording(note: string, projectId: string): Promise<void> {
   try {
     if (isTauri) {
+      await invoke("select_project", { projectId });
       const startedStatus = await invoke<Status>("start_recording", { note });
       // Native capture may emit `started` before this invoke resolves. Never
       // replace that newer event state with an older `preparing` response.
       if (status.phase !== "recording" || startedStatus.phase === "recording") status = startedStatus;
     }
     else {
-      status = { phase: "recording", active_project_id: selectedProjectId, active_video_path: "/mock/recording.mp4", started_at: new Date().toISOString(), last_error: null };
+      status = { phase: "recording", active_project_id: projectId, active_video_path: "/mock/recording.mp4", started_at: new Date().toISOString(), last_error: null };
     }
     render();
   } catch (error) {
@@ -1542,7 +1639,7 @@ async function stopRecording(): Promise<void> {
       status.phase = "stopping"; render();
       mockTimer = window.setTimeout(() => {
         const now = new Date().toISOString();
-        recordings = [{ id: `demo-${Date.now()}`, project_id: selectedProjectId!, video_path: "/mock/new-packet.mp4", metadata_path: "/mock/new-packet.json", note: "New prompt packet", git_branch: activeProject()?.git_branch ?? null, started_at: status.started_at ?? now, ended_at: now, duration_seconds: 138, size_bytes: 18_400_000, success: true, transcript: "New prompt packet transcript", transcript_path: "/mock/new-packet.transcript.md", transcript_segments: [{ start_seconds: 0, end_seconds: 3.2, text: "New prompt packet transcript" }], transcription_status: "complete", transcription_error: null, transcription_language: appSettings.transcription_language, poster_path: null, timeline_notes: [] }, ...recordings];
+        recordings = [{ id: `demo-${Date.now()}`, project_id: selectedProjectId!, video_path: "/mock/new-packet.mp4", metadata_path: "/mock/new-packet.json", note: "New prompt packet", recording_scope: appSettings.branch_locking ? "branch" : "repository", git_branch: activeProject()?.git_branch ?? null, started_at: status.started_at ?? now, ended_at: now, duration_seconds: 138, size_bytes: 18_400_000, success: true, transcript: "New prompt packet transcript", transcript_path: "/mock/new-packet.transcript.md", transcript_segments: [{ start_seconds: 0, end_seconds: 3.2, text: "New prompt packet transcript" }], transcription_status: "complete", transcription_error: null, transcription_language: appSettings.transcription_language, poster_path: null, timeline_notes: [] }, ...recordings];
         status = { ...emptyStatus(), active_project_id: selectedProjectId };
         showToast("Prompt packet created");
       }, 900);
@@ -1576,15 +1673,11 @@ function mockCreateProject(name: string): Project {
 function mockRecordings(projectId: string | null): Recording[] {
   if (projectId !== "api-integration") return [];
   const base = new Date();
-  const item = (id: string, note: string, seconds: number, hourOffset: number, success = true): Recording => ({ id, project_id: projectId, video_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.mp4`, metadata_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.json`, note, git_branch: "feature/oauth", started_at: new Date(base.getTime() - hourOffset * 3_600_000).toISOString(), ended_at: base.toISOString(), duration_seconds: seconds, size_bytes: 12_000_000, success, transcript: success ? `${note}. Walk through the relevant files, then show the failure and the expected behavior.` : null, transcript_path: success ? `/mock/${id}.transcript.md` : null, transcript_segments: success ? [{ start_seconds: 4, end_seconds: 11, text: `${note}. Walk through the relevant files.` }, { start_seconds: 12, end_seconds: 19, text: "Then show the failure and the expected behavior." }] : [], transcription_status: success ? "complete" : "processing", transcription_error: null, transcription_language: "en", poster_path: null, timeline_notes: id === "authentication-edge-cases" ? [
+  const item = (id: string, note: string, seconds: number, hourOffset: number, success = true): Recording => ({ id, project_id: projectId, video_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.mp4`, metadata_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.json`, note, recording_scope: "branch", git_branch: "feature/oauth", started_at: new Date(base.getTime() - hourOffset * 3_600_000).toISOString(), ended_at: base.toISOString(), duration_seconds: seconds, size_bytes: 12_000_000, success, transcript: success ? `${note}. Walk through the relevant files, then show the failure and the expected behavior.` : null, transcript_path: success ? `/mock/${id}.transcript.md` : null, transcript_segments: success ? [{ start_seconds: 4, end_seconds: 11, text: `${note}. Walk through the relevant files.` }, { start_seconds: 12, end_seconds: 19, text: "Then show the failure and the expected behavior." }] : [], transcription_status: success ? "complete" : "processing", transcription_error: null, transcription_language: "en", poster_path: null, timeline_notes: id === "authentication-edge-cases" ? [
     { id: "demo-note-1", timestamp_seconds: 22, text: "The expired-token response should preserve the original request ID.", created_at: base.toISOString(), source: "typed" },
     { id: "demo-note-2", timestamp_seconds: 74, text: "Compare this refresh path with the retry behavior shown later.", created_at: base.toISOString(), source: "voice" },
   ] : [] });
   return [item("authentication-edge-cases", "Authentication edge cases", 138, 1), item("webhook-payload", "Webhook payload", 282, 2, false), item("retry-behavior", "Retry behavior", 96, 3)];
-}
-
-function mockContext(): string {
-  return `# Dicta context: ${activeProject()?.name}\n\nWorking copy: \`${activeProject()?.path}\`\nGit branch: \`${activeProject()?.git_branch}\`\n\n${recordings.map((item) => `- ${item.note}: ${item.video_path}`).join("\n")}`;
 }
 
 async function downloadQualityModel(): Promise<void> {
@@ -1651,7 +1744,7 @@ async function initialize(): Promise<void> {
     appSettings = initialAppSettings;
     selectedTranscriptionLanguage = appSettings.transcription_language;
     projects = initial.projects; status = initial.status;
-    selectedProjectId = status.active_project_id ?? projects[0]?.id ?? null;
+    selectedProjectId = status.active_project_id ?? projects.find((project) => project.id !== "__unprojected__")?.id ?? projects[0]?.id ?? null;
     if (selectedProjectId && selectedProjectId !== status.active_project_id) await invoke("select_project", { projectId: selectedProjectId });
     await refreshRecordings();
     await listen<RecorderEvent>("recorder-event", async ({ payload }) => {
@@ -1673,6 +1766,15 @@ async function initialize(): Promise<void> {
       }
       render();
     });
+    await listen<string>("project-selected", async ({ payload }) => {
+      selectedProjectId = payload;
+      status.active_project_id = payload;
+      activeView = "project";
+      projectPickerOpen = false;
+      await refreshActiveProject();
+      await refreshRecordings();
+      render();
+    });
     await listen<ModelDownloadEvent>("model-download-progress", ({ payload }) => {
       modelDownload = payload;
       modelDownloading = payload.status === "downloading" || payload.status === "verifying";
@@ -1680,11 +1782,12 @@ async function initialize(): Promise<void> {
     });
   } else {
     projects = [
+      { id: "__unprojected__", name: "General", path: "~/Documents/Dicta/unprojected", storage_path: "~/Documents/Dicta/unprojected", source_path: null, git_branch: null, branch_path: "~/Documents/Dicta/unprojected", is_git: false, git_error: null, created_at: new Date(0).toISOString(), recording_count: 0 },
       mockProject("api-integration", "API integration", "feature/oauth", 3),
       mockProject("billing-rewrite", "Billing rewrite", "main", 0),
       mockProject("search-prototype", "Search prototype", "prototype/ranking", 0),
     ];
-    selectedProjectId = projects[0].id; status.active_project_id = selectedProjectId; await refreshRecordings();
+    selectedProjectId = "api-integration"; status.active_project_id = selectedProjectId; await refreshRecordings();
   }
   render();
 }
