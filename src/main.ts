@@ -1,6 +1,9 @@
 import "@phosphor-icons/web/regular";
 import "./style.css";
 import dictaMarkUrl from "./assets/dicta-mark.png";
+import demoRecordingPosterUrl from "./assets/demo-recording-poster.png";
+import codexLightUrl from "./assets/codex-light.png";
+import codexDarkUrl from "./assets/codex-dark.png";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -22,6 +25,7 @@ let startSheetOpen = false;
 let projectPickerOpen = false;
 let recordingTargetProjectId: string | null = null;
 let openPacketMenu: string | null = null;
+let openPacketMenuSurface: "index" | "detail" | null = null;
 let openProjectMenu: string | null = null;
 let removeProjectId: string | null = null;
 let transcribeRecordingId: string | null = null;
@@ -38,7 +42,9 @@ let viewerPaused = true;
 let viewerMarkedTime = 0;
 let viewerNoteDraft = "";
 let viewerNoteSource: TimelineNote["source"] = "typed";
-let viewerPanel: "notes" | "transcript" = "notes";
+let viewerPanel: "notes" | "transcript" | "chapters" = "transcript";
+let recordingSearchOpen = false;
+let recordingQuery = "";
 let viewerListening = false;
 let viewerVoiceProcessing = false;
 let activeSpeechRecognition: SpeechRecognitionLike | null = null;
@@ -52,8 +58,8 @@ let mockModelTimer: number | null = null;
 let mcpRestarting = false;
 let mcpStatus: McpStatus = { installed: false, codex_configured: false, executable_path: "", message: "Connect Dicta to Codex" };
 let activeView: "project" | "settings" = "project";
-let settingsSection: "appearance" | "shortcuts" | "transcription" | "storage" = "appearance";
-let appSettings: AppSettings = { shortcut_id: defaultShortcutId, cleanup_merged_videos: true, branch_locking: true, transcription_language: "auto" };
+let settingsSection: "appearance" | "connections" | "shortcuts" | "transcription" | "storage" = "appearance";
+let appSettings: AppSettings = { shortcut_id: defaultShortcutId, cleanup_merged_videos: true, branch_locking: true, transcription_language: "auto", general_path: null };
 let cleanupRunning = false;
 let cleanupSummary: CleanupSummary | null = null;
 type ThemePreference = "system" | "light" | "dark";
@@ -153,24 +159,7 @@ function formatDate(value: string): string {
 
 function recordingDayHeading(value: string): string {
   const date = new Date(value);
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  const prefix = date.toDateString() === today.toDateString()
-    ? "Today"
-    : date.toDateString() === yesterday.toDateString()
-      ? "Yesterday"
-      : new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(date);
-  const calendarDate = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(date);
-  return `${prefix} — ${calendarDate}`;
-}
-
-function headerClock(): { date: string; time: string } {
-  const now = new Date();
-  return {
-    date: new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(now),
-    time: new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }).format(now),
-  };
+  return new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(date);
 }
 
 function activeProject(): Project | undefined {
@@ -187,6 +176,19 @@ function recordingTitle(recording: Recording): string {
 
 function recordingSubtitle(recording: Recording): string {
   return recording.note.trim() || transcriptExcerpt(recording);
+}
+
+function recordingActionsMenu(recording: Recording, className: string): string {
+  return `
+    <div class="packet-menu ${className}">
+      <button data-copy-recording-context="${escapeHtml(recording.id)}"><i class="ph ph-copy"></i>Copy context</button>
+      <button data-transcribe="${escapeHtml(recording.id)}" ${recording.success ? "" : "disabled"}><i class="ph ph-waveform"></i>Transcribe</button>
+      <span class="packet-menu-divider"></span>
+      <button data-reveal="${escapeHtml(recording.video_path)}"><i class="ph ph-folder-open"></i>Reveal</button>
+      <button data-copy-video="${escapeHtml(recording.video_path)}"><i class="ph ph-copy"></i>Copy path</button>
+      <span class="packet-menu-divider"></span>
+      <button class="danger" data-delete="${escapeHtml(recording.id)}"><i class="ph ph-trash"></i>Delete</button>
+    </div>`;
 }
 
 function scopeLabel(project: Project | undefined, branchLocking = appSettings.branch_locking): string {
@@ -216,19 +218,6 @@ function transcriptExcerpt(recording: Recording, words = 18): string {
   return parts.length > words ? `${parts.slice(0, words).join(" ")}…` : transcript;
 }
 
-function packetStatus(recording: Recording): { className: string; icon: string; label: string; title: string } {
-  if (recording.transcription_status === "processing") {
-    return { className: "processing", icon: "ph-spinner-gap", label: "Working", title: "Dicta is turning the narration into agent-readable context" };
-  }
-  if (recording.transcription_status === "complete" || Boolean(recording.transcript?.trim())) {
-    return { className: "ready", icon: "ph-check-circle", label: "Ready", title: "Transcript ready for agents" };
-  }
-  if (!recording.success || recording.transcription_status === "failed") {
-    return { className: "failed", icon: "ph-warning-circle", label: "Issue", title: recording.transcription_error ?? "Transcription failed" };
-  }
-  return { className: "processing", icon: "ph-spinner-gap", label: "Working", title: "Dicta is turning the narration into agent-readable context" };
-}
-
 const transcriptionLanguages = [
   { code: "nl", label: "Dutch", native: "Nederlands" },
   { code: "en", label: "English", native: "English" },
@@ -247,13 +236,6 @@ const shortcutOptions = [
 
 function shortcutLabel(): string {
   return shortcutOptions.find((shortcut) => shortcut.id === appSettings.shortcut_id)?.label ?? shortcutOptions[0].label;
-}
-
-function statusCopy(): string {
-  if (status.phase === "recording") return "Stop";
-  if (status.phase === "preparing") return "Prepare";
-  if (status.phase === "stopping") return "Save";
-  return "Record";
 }
 
 function showToast(message: string): void {
@@ -283,7 +265,6 @@ function render(): void {
   const recordingToDelete = recordings.find((recording) => recording.id === deleteRecordingId);
   const projectToRemove = projects.find((item) => item.id === removeProjectId);
   const latestRecording = recordings[0];
-  const clock = headerClock();
   const recordingGroups = recordings.reduce<Array<{ key: string; label: string; items: Recording[] }>>((groups, recording) => {
     const key = new Date(recording.started_at).toDateString();
     const existing = groups.find((group) => group.key === key);
@@ -291,6 +272,21 @@ function render(): void {
     else groups.push({ key, label: recordingDayHeading(recording.started_at), items: [recording] });
     return groups;
   }, []);
+  const normalizedQuery = recordingQuery.trim().toLowerCase();
+  const visibleRecordingGroups = recordingGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((recording) => !normalizedQuery
+        || recording.id.toLowerCase().includes(normalizedQuery)
+        || recording.note.toLowerCase().includes(normalizedQuery)
+        || (recording.transcript ?? "").toLowerCase().includes(normalizedQuery)),
+    }))
+    .filter((group) => group.items.length > 0);
+  if (recordings.length > 0 && !recordings.some((recording) => recording.id === viewingRecordingId)) {
+    viewingRecordingId = recordings[0].id;
+    viewerPanel = "transcript";
+  }
+  const viewing = recordings.find((recording) => recording.id === viewingRecordingId);
 
   app.innerHTML = `
     <main class="app-shell">
@@ -319,6 +315,7 @@ function render(): void {
             </div>
           `).join("")}
         </nav>
+        <button class="sidebar-new-project" id="new-project" ${isBusy ? "disabled" : ""}><i class="ph ph-plus"></i><span>New project</span></button>
         <section class="sidebar-recents" aria-labelledby="recents-title">
           <div class="sidebar-section-label" id="recents-title">Recents</div>
           ${latestRecording ? `
@@ -334,17 +331,14 @@ function render(): void {
           `}
         </section>
         <div class="sidebar-actions">
-          <button class="add-project" id="new-project" ${isBusy ? "disabled" : ""}>
-            <i class="ph ph-folder-plus" aria-hidden="true"></i><span>Link project folder</span>
-          </button>
-          <button class="sidebar-settings ${activeView === "settings" ? "selected" : ""}" id="open-settings" ${isBusy ? "disabled" : ""}>
+          <button class="sidebar-settings ${activeView === "settings" ? "selected" : ""}" id="open-settings" aria-pressed="${activeView === "settings"}" ${isBusy ? "disabled" : ""}>
             <i class="ph ph-gear-six" aria-hidden="true"></i><span>Settings</span>
           </button>
         </div>
       </aside>
 
       <section class="workspace">
-        <header class="project-header" data-tauri-drag-region>
+        <header class="project-header split-project-header ${recordingSearchOpen ? "searching" : ""}" data-tauri-drag-region>
           <div class="project-heading" data-tauri-drag-region>
             <div class="project-switcher-wrap">
               <button class="project-switcher" id="project-switcher" type="button" aria-haspopup="listbox" aria-expanded="${projectPickerOpen}">
@@ -353,110 +347,119 @@ function render(): void {
               ${projectPickerOpen ? `<div class="project-switcher-menu" role="listbox">${projects.map((item) => `<button type="button" role="option" aria-selected="${item.id === selectedProjectId}" data-switch-project="${escapeHtml(item.id)}"><i class="ph ${item.id === "__unprojected__" ? "ph-tray" : "ph-folder"}"></i><span><strong>${escapeHtml(item.name)}</strong>${item.id === "__unprojected__" ? "" : `<small>${escapeHtml(appSettings.branch_locking ? item.git_branch ?? "Git unavailable" : "Repository-wide")}</small>`}</span>${item.id === selectedProjectId ? '<i class="ph ph-check"></i>' : ""}</button>`).join("")}</div>` : ""}
             </div>
             <div class="project-context">
-              <button class="path-button" id="copy-path" ${project ? "" : "disabled"} title="Copy working-copy path">
+              <button class="path-button" id="copy-path" ${project ? "" : "disabled"} title="${project?.id === "__unprojected__" ? "Change the General recordings folder" : "Copy working-copy path"}">
                 <i class="ph ph-folder" aria-hidden="true"></i>
                 <span>${project ? escapeHtml(compactPath(project.path)) : "Link a Git project to begin"}</span>
-                ${project ? '<i class="ph ph-copy" aria-hidden="true"></i>' : ""}
+                ${project ? `<i class="ph ${project.id === "__unprojected__" ? "ph-pencil-simple" : "ph-copy"}" aria-hidden="true"></i>` : ""}
               </button>
-              ${project ? `<button class="branch-pill ${branchUnavailable ? "unavailable" : ""}" id="refresh-branch" title="Refresh recording scope"><i class="ph ${project.id === "__unprojected__" ? "ph-tray" : appSettings.branch_locking ? "ph-git-branch" : "ph-git-fork"}"></i><span>${escapeHtml(scopeLabel(project))}</span>${project.is_git && appSettings.branch_locking ? '<i class="ph ph-arrows-clockwise refresh-icon"></i>' : ""}</button>` : ""}
+              ${project && project.id !== "__unprojected__" ? `<button class="branch-pill ${branchUnavailable ? "unavailable" : ""}" id="refresh-branch" title="Refresh recording scope"><i class="ph ${appSettings.branch_locking ? "ph-git-branch" : "ph-git-fork"}"></i><span>${escapeHtml(scopeLabel(project))}</span></button>` : ""}
             </div>
           </div>
-          <div class="header-clock" aria-label="${escapeHtml(`${clock.date}, ${clock.time}`)}" data-tauri-drag-region>
-            <span data-tauri-drag-region>${escapeHtml(clock.date)}</span><strong data-tauri-drag-region>${escapeHtml(clock.time)}</strong>
+          <div class="split-header-actions">
+            <div class="recording-search ${recordingSearchOpen ? "open" : ""}">
+              ${recordingSearchOpen ? '<i class="ph ph-magnifying-glass search-field-icon" aria-hidden="true"></i>' : ""}
+              <input id="recording-search" type="search" value="${escapeHtml(recordingQuery)}" placeholder="Search IDs, notes, and transcripts" aria-label="Search recording IDs, notes, and transcripts" />
+              <button id="toggle-recording-search" type="button" aria-label="${recordingSearchOpen ? "Close recording search" : "Search recordings"}"><i class="ph ${recordingSearchOpen ? "ph-x" : "ph-magnifying-glass"}"></i></button>
+            </div>
           </div>
           ${status.last_error || project?.git_error ? `<div class="error-banner"><i class="ph ph-warning-circle"></i><span>${escapeHtml(status.last_error ?? project?.git_error ?? "")}</span></div>` : ""}
         </header>
 
-        <section class="packet-section" data-project-id="${escapeHtml(selectedProjectId ?? "")}">
-          <div class="packet-title-row">
-            <div class="packet-title-copy"><i class="ph ph-stack" aria-hidden="true"></i><h2>Prompt packets</h2><p>${recordings.length} recording${recordings.length === 1 ? "" : "s"}</p></div>
-          </div>
-          <div class="packet-table" role="table" aria-label="Prompt packets">
-            <div class="packet-head" role="row">
-              <span>Preview</span><span>Title</span><span>Duration</span><span>Recorded</span><span>Status</span><span></span>
-            </div>
-            <div class="packet-body">
+        <section class="packet-section split-review-workspace" data-project-id="${escapeHtml(selectedProjectId ?? "")}">
+          <aside class="recording-index" aria-label="Recordings">
+            <header class="recording-index-header">
+              <div><h2>Recordings</h2><button id="focus-recording-search" type="button" aria-label="Search and filter recordings"><i class="ph ph-funnel-simple"></i></button></div>
+            </header>
+            <div class="recording-index-body">
               ${recordings.length === 0 ? `
-                <div class="empty-state">
+                <div class="empty-state split-empty-state">
                   <i class="ph ph-monitor-play" aria-hidden="true"></i>
                   <h3>Your first explanation starts here</h3>
                   <p>Record your screen and voice. This packet will be saved to ${escapeHtml(scopeLabel(project))}.</p>
                   <button id="empty-record" ${buttonDisabled ? "disabled" : ""}>Record</button>
                 </div>
-              ` : recordingGroups.map((group) => `
-                <div class="packet-group-heading"><span>${escapeHtml(group.label)}</span><i aria-hidden="true"></i></div>
-                ${group.items.map((recording) => {
-                  const packet = packetStatus(recording);
-                  const poster = mediaSrc(recording.poster_path);
-                  const subtitle = recordingSubtitle(recording);
-                  return `
-                  <div class="packet-row" role="row" data-recording-id="${escapeHtml(recording.id)}">
-                    <button class="thumbnail-button" data-open-packet="${escapeHtml(recording.id)}" aria-label="Play ${escapeHtml(recording.id)}">
-                      ${poster ? `<img src="${escapeHtml(poster)}" alt="" />` : `<span class="thumbnail-fallback"><i class="ph ph-monitor-play" aria-hidden="true"></i></span>`}
-                      <span class="play-overlay"><i class="ph ph-play" aria-hidden="true"></i></span>
-                    </button>
-                    <button class="packet-name" data-open-packet="${escapeHtml(recording.id)}">
-                      <strong>${escapeHtml(recordingTitle(recording))}</strong>
-                      ${subtitle ? `<small>${escapeHtml(subtitle)}</small>` : recording.transcription_status === "complete" ? "" : `<small>${escapeHtml(packet.title)}</small>`}
-                    </button>
-                    <span class="packet-meta">${formatDuration(recording.duration_seconds)}</span>
-                    <span class="packet-meta">${formatDate(recording.started_at)}</span>
-                    <span><span class="status-chip ${packet.className}" title="${escapeHtml(packet.title)}"><i class="ph ${packet.icon}"></i>${packet.label}</span></span>
-                    <div class="menu-cell">
-                      <button class="more-button" data-menu="${escapeHtml(recording.id)}" aria-label="More actions"><i class="ph ph-dots-three"></i></button>
-                      ${openPacketMenu === recording.id ? `
-                        <div class="packet-menu">
-                          <button data-open-packet="${escapeHtml(recording.id)}"><i class="ph ph-play"></i>Open</button>
-                          <button data-copy-recording-context="${escapeHtml(recording.id)}"><i class="ph ph-copy"></i>Copy Context</button>
-                          <button data-transcribe="${escapeHtml(recording.id)}" ${recording.success ? "" : "disabled"}><i class="ph ph-waveform"></i>Transcribe</button>
-                          <span class="packet-menu-divider"></span>
-                          <button data-reveal="${escapeHtml(recording.video_path)}"><i class="ph ph-folder-open"></i>Reveal</button>
-                          <button data-copy-video="${escapeHtml(recording.video_path)}"><i class="ph ph-copy"></i>Copy path</button>
-                          <span class="packet-menu-divider"></span>
-                          <button class="danger" data-delete="${escapeHtml(recording.id)}"><i class="ph ph-trash"></i>Delete</button>
-                        </div>
-                      ` : ""}
-                    </div>
-                  </div>`;
-                }).join("")}
+              ` : visibleRecordingGroups.length === 0 ? `
+                <div class="recording-search-empty"><i class="ph ph-magnifying-glass"></i><strong>No matching recordings</strong><span>Try another ID, note, or transcript phrase.</span></div>
+              ` : visibleRecordingGroups.map((group) => `
+                <div class="recording-index-group">
+                  <div class="recording-index-date"><span>${escapeHtml(group.label)}</span><i></i></div>
+                  ${group.items.map((recording) => {
+                    const subtitle = recordingSubtitle(recording);
+                    return `
+                    <div class="recording-index-item ${recording.id === viewingRecordingId ? "selected" : ""}" data-recording-id="${escapeHtml(recording.id)}">
+                      <button class="recording-index-main" data-open-packet="${escapeHtml(recording.id)}" aria-label="Open ${escapeHtml(recording.id)}">
+                        <span class="recording-index-play"><i class="ph ph-play"></i></span>
+                        <span class="recording-index-copy"><strong>${escapeHtml(recordingTitle(recording))}</strong>${subtitle ? `<small>${escapeHtml(subtitle)}</small>` : ""}</span>
+                        <span class="recording-index-duration">${formatDuration(recording.duration_seconds)}</span>
+                      </button>
+                      <button class="recording-index-copy-context" type="button" data-copy-recording-context="${escapeHtml(recording.id)}" aria-label="Copy context for ${escapeHtml(recording.id)}" title="Copy context"><i class="ph ph-copy"></i></button>
+                    </div>`;
+                  }).join("")}
+                </div>
               `).join("")}
             </div>
+          </aside>
+
+          ${viewing ? (() => {
+            const videoAsset = mediaSrc(viewing.video_path);
+            const video = !isMacPlatform && viewerVideoBlobRecordingId === viewing.id
+              ? viewerVideoBlobUrl
+              : isMacPlatform ? videoAsset : null;
+            const poster = mediaSrc(viewing.poster_path) || (!isTauri ? demoRecordingPosterUrl : "");
+            const timelineNotes = viewing.timeline_notes ?? [];
+            const segments = viewing.transcript_segments ?? [];
+            return `
+            <article class="inline-review" id="packet-viewer" tabindex="-1" aria-label="Recording review">
+              <header class="inline-review-header">
+                <div class="inline-review-title">
+                  <div><h2>${escapeHtml(recordingTitle(viewing))}</h2>${recordingSubtitle(viewing) ? `<p>${escapeHtml(recordingSubtitle(viewing))}</p>` : ""}</div>
+                  <div class="inline-action-wrap">
+                    <button class="inline-more" data-menu="${escapeHtml(viewing.id)}" data-menu-surface="detail" aria-label="Recording actions"><i class="ph ph-dots-three"></i></button>
+                    ${openPacketMenu === viewing.id && openPacketMenuSurface === "detail" ? recordingActionsMenu(viewing, "detail-recording-menu") : ""}
+                  </div>
+                </div>
+                <div class="inline-review-meta"><span>${new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(new Date(viewing.started_at))} · ${new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(viewing.started_at))}</span><button class="review-context" type="button" data-copy-recording-context="${escapeHtml(viewing.id)}" aria-label="Copy recording context" title="Copy context"><i class="ph ph-copy"></i></button></div>
+              </header>
+              <div class="inline-review-scroll">
+                <div class="inline-video-shell">
+                  ${videoAsset || poster ? `<video id="packet-video" preload="metadata" playsinline controls${poster ? ` poster="${escapeHtml(poster)}"` : ""}>${video ? `<source src="${escapeHtml(video)}" type="video/mp4">` : ""}</video><div class="viewer-playback-error" id="viewer-playback-error" role="alert" hidden><i class="ph ph-warning-circle"></i><span>Video playback is unavailable.</span></div>` : `<div class="viewer-missing"><i class="ph ph-video-camera-slash"></i><span>Video file is missing.</span></div>`}
+                </div>
+                <div class="inline-review-tabs" role="tablist">
+                  <button type="button" role="tab" aria-selected="${viewerPanel === "transcript"}" class="${viewerPanel === "transcript" ? "selected" : ""}" data-viewer-panel="transcript">Transcript</button>
+                  <button type="button" role="tab" aria-selected="${viewerPanel === "chapters"}" class="${viewerPanel === "chapters" ? "selected" : ""}" data-viewer-panel="chapters">Chapters</button>
+                  <button type="button" role="tab" aria-selected="${viewerPanel === "notes"}" class="${viewerPanel === "notes" ? "selected" : ""}" data-viewer-panel="notes">Notes${timelineNotes.length ? ` <span>${timelineNotes.length}</span>` : ""}</button>
+                </div>
+                ${viewerPanel === "transcript" ? `
+                  <div class="inline-transcript">
+                    ${segments.length ? segments.map((segment) => `<article class="inline-transcript-segment"><button type="button" data-transcript-time="${segment.start_seconds}">${formatViewerTime(segment.start_seconds)}</button><p>${escapeHtml(segment.text)}</p></article>`).join("") : viewing.transcript?.trim() ? `<p class="inline-transcript-copy">${escapeHtml(viewing.transcript)}</p>` : `<div class="notes-empty"><i class="ph ph-waveform"></i><strong>No transcript yet</strong><p>${escapeHtml(viewing.transcription_error || (viewing.transcription_status === "processing" ? "The transcript is still being written." : "Transcribe this recording to read it here."))}</p></div>`}
+                  </div>` : viewerPanel === "chapters" ? `
+                  <div class="inline-chapters">
+                    ${segments.length ? segments.map((segment, index) => `<button type="button" data-transcript-time="${segment.start_seconds}"><span>${formatViewerTime(segment.start_seconds)}</span><div><strong>${index === 0 ? "Overview" : `Chapter ${index + 1}`}</strong><small>${escapeHtml(segment.text)}</small></div><i class="ph ph-caret-right"></i></button>`).join("") : `<div class="notes-empty"><i class="ph ph-list-numbers"></i><strong>No chapters yet</strong><p>Timestamped transcript sections will appear here.</p></div>`}
+                  </div>` : `
+                  <div class="inline-notes">
+                    <form class="note-composer" id="timeline-note-form">
+                      <div class="composer-heading"><span class="composer-time"><i class="ph ph-map-pin"></i><strong id="marked-time">${formatViewerTime(viewerMarkedTime)}</strong></span><button type="button" id="use-current-time">Use current time</button></div>
+                      <textarea id="timeline-note-input" rows="3" maxlength="2000" placeholder="What should an agent notice here?">${escapeHtml(viewerNoteDraft)}</textarea>
+                      <div class="composer-actions"><button class="dictate-button ${viewerListening ? "listening" : ""} ${viewerVoiceProcessing ? "processing" : ""}" id="dictate-note" type="button" ${viewerVoiceProcessing ? "disabled" : ""}><i class="ph ${viewerVoiceProcessing ? "ph-spinner-gap" : viewerListening ? "ph-stop-circle" : "ph-microphone"}"></i><span>${viewerVoiceProcessing ? "Transcribing…" : viewerListening ? "Listening…" : "Speak"}</span></button><button class="add-note-button" type="submit" ${viewerNoteDraft.trim() ? "" : "disabled"}>Add note</button></div>
+                    </form>
+                    <div class="timeline-notes">${timelineNotes.length ? timelineNotes.map((note) => `<article class="timeline-note"><button class="note-jump" type="button" data-note-time="${note.timestamp_seconds}"><i class="ph ph-play"></i>${formatViewerTime(note.timestamp_seconds)}</button><div><p>${escapeHtml(note.text)}</p><small>${note.source === "voice" ? `<i class="ph ph-microphone"></i> Spoken note` : "Timestamp note"}</small></div><button class="note-delete" type="button" data-delete-note="${escapeHtml(note.id)}" aria-label="Delete note"><i class="ph ph-trash"></i></button></article>`).join("") : `<div class="notes-empty"><i class="ph ph-map-pin-line"></i><strong>No notes yet</strong><p>Mark a moment in the video, then type or speak what matters.</p></div>`}</div>
+                  </div>`}
+              </div>
+            </article>`;
+          })() : `<div class="inline-review-empty"><i class="ph ph-video-camera"></i><strong>Select a recording</strong><span>Choose a recording to review its video and transcript.</span></div>`}
+          <div class="capture-dock ${status.phase === "recording" ? "active" : ""}" aria-live="polite">
+            <button class="capture-dock-button" id="record-toggle" type="button" aria-label="${status.phase === "recording" ? "Stop recording" : "Start recording"}" title="${status.phase === "recording" ? "Stop recording" : `Record · ${escapeHtml(shortcutLabel())}`}" ${buttonDisabled ? "disabled" : ""}>
+              <span class="capture-dock-icon"><i class="ph ${status.phase === "recording" ? "ph-stop" : "ph-record"}"></i></span>
+            </button>
           </div>
         </section>
 
-        <div class="floating-record-zone">
-          ${status.phase === "recording" ? `<span class="recording-live-time" id="record-time">${elapsed()}</span>` : ""}
-          <div class="floating-record ${isBusy ? "is-busy" : ""} ${status.phase === "recording" ? "is-recording" : ""} ${buttonDisabled ? "is-disabled" : ""}">
-            <span class="access-light access-light-mic is-ready" role="status" aria-label="Microphone access ready" title="Microphone access ready"></span>
-            <button class="floating-record-button" id="record-toggle" type="button" aria-label="${status.phase === "recording" ? "Stop recording" : "Start screen and audio recording"}" title="${statusCopy()} · ${escapeHtml(shortcutLabel())}" ${buttonDisabled ? "disabled" : ""}>
-              <span class="record-button-mark" aria-hidden="true"></span>
-            </button>
-            <span class="access-light access-light-folder ${project ? "is-ready" : "is-waiting"}" role="status" aria-label="${project ? "Project folder access ready" : "Link a project folder to record"}" title="${project ? "Project folder access ready" : "Link a project folder to record"}"></span>
-            <button class="capture-options" id="record-options" type="button" aria-label="Open recording options" title="Recording options" ${buttonDisabled || status.phase === "recording" ? "disabled" : ""}><i class="ph ph-caret-down" aria-hidden="true"></i></button>
-          </div>
-        </div>
-
-        <footer class="workspace-footer">
-          <span></span>
-          <div class="footer-actions">
-            <button class="footer-button mcp-button ${mcpStatus.codex_configured ? "connected" : ""}" id="connect-mcp" ${mcpRestarting ? "disabled" : ""}><i class="ph ${mcpRestarting ? "ph-spinner-gap mcp-spin" : mcpStatus.codex_configured ? "ph-arrow-clockwise" : "ph-plug"}"></i>${mcpRestarting ? "Restarting…" : mcpStatus.codex_configured ? "Restart" : "Connect"}</button>
-            <button class="footer-button" id="reveal-project" ${project?.branch_path || project?.storage_path ? "" : "disabled"}><i class="ph ph-folder-open"></i>Reveal</button>
-          </div>
-        </footer>
-
         ${activeView === "settings" ? `
-          <section class="settings-page" aria-labelledby="settings-title">
-            <header class="settings-header">
-              <div>
-                <span class="settings-eyebrow">Dicta on this ${platformName}</span>
-                <h1 id="settings-title">Settings</h1>
-              </div>
-              <button class="settings-close" id="close-settings" aria-label="Close settings"><i class="ph ph-x"></i></button>
-            </header>
-
+          <section class="settings-page" aria-label="Settings">
             <div class="settings-layout">
               <nav class="settings-nav" aria-label="Settings sections">
                 <button class="${settingsSection === "appearance" ? "selected" : ""}" data-settings-section="appearance"><i class="ph ph-palette"></i><span>Appearance</span></button>
+                <button class="${settingsSection === "connections" ? "selected" : ""}" data-settings-section="connections"><i class="ph ph-plugs-connected"></i><span>Local AI</span></button>
                 <button class="${settingsSection === "shortcuts" ? "selected" : ""}" data-settings-section="shortcuts"><i class="ph ph-keyboard"></i><span>Shortcuts</span></button>
                 <button class="${settingsSection === "transcription" ? "selected" : ""}" data-settings-section="transcription"><i class="ph ph-waveform"></i><span>Transcription</span></button>
                 <button class="${settingsSection === "storage" ? "selected" : ""}" data-settings-section="storage"><i class="ph ph-hard-drives"></i><span>Storage</span></button>
@@ -481,6 +484,21 @@ function render(): void {
                         </button>
                       `).join("")}
                     </div>
+                  </div>
+                </section>
+
+                <section class="settings-section-block" id="connections-settings">
+                  <div class="settings-content-heading">
+                    <h2>Local AI connections</h2>
+                    <p>Choose which local AI tools can use Dicta context.</p>
+                  </div>
+                  <div class="settings-group" aria-label="Model Context Protocol connections">
+                    <button class="connection-tile ${mcpStatus.codex_configured ? "connected" : ""}" id="connect-mcp" ${mcpRestarting ? "disabled" : ""}>
+                      <span class="codex-icon-wrap"><img class="codex-icon codex-icon-light" src="${codexLightUrl}" alt="" /><img class="codex-icon codex-icon-dark" src="${codexDarkUrl}" alt="" /></span>
+                      <span class="connection-tile-copy"><strong>Codex</strong><small>${mcpRestarting ? "Restarting…" : mcpStatus.codex_configured ? "Connected" : "Connect"}</small></span>
+                      <span class="connection-tile-state ${mcpStatus.codex_configured ? "connected" : ""}">${mcpStatus.codex_configured ? '<i class="ph ph-check-circle"></i>' : '<i class="ph ph-arrow-right"></i>'}</span>
+                    </button>
+                    <div class="coming-soon-row"><span>More local AI tools</span><small>Coming soon</small></div>
                   </div>
                 </section>
 
@@ -575,7 +593,6 @@ function render(): void {
                   <p class="engine-message">${escapeHtml(modelStatus.message)}</p>
                 </section>
 
-                <div class="privacy-note"><i class="ph ph-shield-check"></i><p><strong>Your recordings stay private.</strong> Dicta downloads the model directly, verifies it before installation, and transcribes locally.</p></div>
                 </section>
 
                 <section class="settings-section-block" id="storage-settings">
@@ -691,98 +708,6 @@ function render(): void {
       </div>
     ` : ""}
 
-    ${(() => {
-      const viewing = recordings.find((recording) => recording.id === viewingRecordingId);
-      if (!viewing) return "";
-      const videoAsset = mediaSrc(viewing.video_path);
-      const video = !isMacPlatform && viewerVideoBlobRecordingId === viewing.id
-        ? viewerVideoBlobUrl
-        : isMacPlatform ? videoAsset : null;
-      const poster = mediaSrc(viewing.poster_path);
-      const duration = Math.max(0, viewing.duration_seconds ?? 0);
-      const timelineNotes = viewing.timeline_notes ?? [];
-      return `
-      <section class="packet-review" id="packet-viewer" tabindex="-1" aria-label="Video review">
-        <header class="review-header">
-          <div class="review-title">
-            <button class="review-icon-button" type="button" data-close-viewer aria-label="Back to recordings"><i class="ph ph-arrow-left"></i></button>
-            <div><h2>${escapeHtml(recordingTitle(viewing))}</h2><p>${formatDate(viewing.started_at)} · ${formatDuration(viewing.duration_seconds)}</p></div>
-          </div>
-          <div class="review-header-actions">
-            <span><i class="ph ph-note-pencil"></i>${timelineNotes.length} note${timelineNotes.length === 1 ? "" : "s"}</span>
-            <button class="review-context" type="button" data-copy-recording-context="${escapeHtml(viewing.id)}"><i class="ph ph-copy"></i>Context</button>
-            <button class="review-icon-button" id="review-fullscreen" type="button" aria-label="Enter full screen" title="Enter full screen"><i class="ph ph-corners-out"></i></button>
-            <button class="review-done" type="button" data-close-viewer>Done</button>
-          </div>
-        </header>
-
-        <div class="review-body">
-          <div class="review-stage">
-            <div class="viewer-media">
-              ${videoAsset ? `<video id="packet-video" preload="metadata" playsinline${poster ? ` poster="${escapeHtml(poster)}"` : ""}>${video ? `<source src="${escapeHtml(video)}" type="video/mp4">` : ""}</video><div class="viewer-playback-error" id="viewer-playback-error" role="alert" hidden><i class="ph ph-warning-circle"></i><span>Video playback is unavailable.</span></div>` : `<div class="viewer-missing"><i class="ph ph-video-camera-slash"></i><span>Video file is missing.</span></div>`}
-            </div>
-            <div class="review-controls">
-              <div class="review-control-row">
-                <div class="playback-actions">
-                  <button class="control-button" type="button" data-skip="-5" aria-label="Back 5 seconds"><i class="ph ph-arrow-counter-clockwise"></i><small>5</small></button>
-                  <button class="play-button" id="viewer-play" type="button" aria-label="Play"><i class="ph ${viewerPaused ? "ph-play" : "ph-pause"}"></i></button>
-                  <button class="control-button" type="button" data-skip="5" aria-label="Forward 5 seconds"><i class="ph ph-arrow-clockwise"></i><small>5</small></button>
-                </div>
-                <span class="viewer-clock"><strong id="viewer-current-time">${formatViewerTime(viewerTime)}</strong><span>/</span>${formatViewerTime(duration)}</span>
-                <button class="mark-button" id="mark-timestamp" type="button"><i class="ph ph-map-pin-plus"></i>Mark ${formatViewerTime(viewerTime)}<kbd>M</kbd></button>
-              </div>
-              <div class="timeline-wrap">
-                <input id="viewer-timeline" type="range" min="0" max="${duration || 1}" step="0.05" value="${Math.min(viewerTime, duration || 1)}" aria-label="Video timeline" />
-                <div class="timeline-note-markers" aria-hidden="true">
-                  ${duration > 0 ? timelineNotes.map((note) => `<button type="button" data-note-time="${note.timestamp_seconds}" style="left:${Math.min(100, Math.max(0, note.timestamp_seconds / duration * 100))}%" title="${escapeHtml(note.text)}"></button>`).join("") : ""}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <aside class="review-sidebar">
-            <div class="review-tabs" role="tablist">
-              <button type="button" role="tab" aria-selected="${viewerPanel === "notes"}" class="${viewerPanel === "notes" ? "selected" : ""}" data-viewer-panel="notes">Notes <span>${timelineNotes.length}</span></button>
-              <button type="button" role="tab" aria-selected="${viewerPanel === "transcript"}" class="${viewerPanel === "transcript" ? "selected" : ""}" data-viewer-panel="transcript">Transcript</button>
-            </div>
-            ${viewerPanel === "notes" ? `
-              <div class="notes-panel">
-                <form class="note-composer" id="timeline-note-form">
-                  <div class="composer-heading">
-                    <span class="composer-time"><i class="ph ph-map-pin"></i><strong id="marked-time">${formatViewerTime(viewerMarkedTime)}</strong></span>
-                    <button type="button" id="use-current-time">Use current time</button>
-                  </div>
-                  <textarea id="timeline-note-input" rows="4" maxlength="2000" placeholder="What should an agent notice here?">${escapeHtml(viewerNoteDraft)}</textarea>
-                  <div class="composer-actions">
-                    <button class="dictate-button ${viewerListening ? "listening" : ""} ${viewerVoiceProcessing ? "processing" : ""}" id="dictate-note" type="button" title="Speak this note" ${viewerVoiceProcessing ? "disabled" : ""}><i class="ph ${viewerVoiceProcessing ? "ph-spinner-gap" : viewerListening ? "ph-stop-circle" : "ph-microphone"}"></i><span>${viewerVoiceProcessing ? "Transcribing…" : viewerListening ? "Listening…" : "Speak"}</span></button>
-                    <button class="add-note-button" type="submit" ${viewerNoteDraft.trim() ? "" : "disabled"}>Add note</button>
-                  </div>
-                </form>
-                <div class="timeline-notes" aria-live="polite">
-                  ${timelineNotes.length ? timelineNotes.map((note) => `
-                    <article class="timeline-note" data-note-time="${note.timestamp_seconds}">
-                      <button class="note-jump" type="button" data-note-time="${note.timestamp_seconds}"><i class="ph ph-play"></i>${formatViewerTime(note.timestamp_seconds)}</button>
-                      <div><p>${escapeHtml(note.text)}</p><small>${note.source === "voice" ? `<i class="ph ph-microphone"></i> Spoken note` : "Timestamp note"}</small></div>
-                      <button class="note-delete" type="button" data-delete-note="${escapeHtml(note.id)}" aria-label="Delete note"><i class="ph ph-trash"></i></button>
-                    </article>`).join("") : `<div class="notes-empty"><i class="ph ph-map-pin-line"></i><strong>No notes yet</strong><p>Mark a moment in the video, then type or speak what matters.</p></div>`}
-                </div>
-              </div>` : `
-              <div class="viewer-transcript">
-                ${viewing.transcript_segments?.length
-                  ? `<div class="transcript-segments">${viewing.transcript_segments.map((segment) => `
-                      <article class="transcript-segment">
-                        <button type="button" data-transcript-time="${segment.start_seconds}" title="Jump to ${formatViewerTime(segment.start_seconds)}"><i class="ph ph-play"></i>${formatViewerTime(segment.start_seconds)}</button>
-                        <div><p>${escapeHtml(segment.text)}</p><small>${formatViewerTime(segment.start_seconds)}–${formatViewerTime(segment.end_seconds)}</small></div>
-                      </article>`).join("")}</div>`
-                  : viewing.transcript?.trim()
-                    ? `<pre>${escapeHtml(viewing.transcript)}</pre><p class="legacy-transcript-note">Retranscribe this recording to add exact timestamps.</p>`
-                  : `<div class="notes-empty"><i class="ph ph-waveform"></i><strong>No transcript yet</strong><p>${escapeHtml(viewing.transcription_error || (viewing.transcription_status === "processing" ? "The transcript is still being written." : "Transcribe this recording to read it here."))}</p></div>`}
-              </div>`}
-          </aside>
-        </div>
-      </section>`;
-    })()}
-
     ${toastMessage ? `<div class="toast"><i class="ph ph-check-circle"></i>${escapeHtml(toastMessage)}</div>` : ""}
   `;
 
@@ -855,7 +780,7 @@ function restoreViewer(): void {
       : "This recording could not be loaded.");
   });
   const viewing = recordings.find((recording) => recording.id === viewingRecordingId);
-  if (!isMacPlatform && viewing) void loadLinuxViewerVideo(viewing, showPlaybackError);
+  if (isTauri && !isMacPlatform && viewing) void loadLinuxViewerVideo(viewing, showPlaybackError);
 }
 
 function releaseViewerVideoBlob(): void {
@@ -932,7 +857,7 @@ function openPacket(recordingId: string): void {
   viewerMarkedTime = 0;
   viewerNoteDraft = "";
   viewerNoteSource = "typed";
-  viewerPanel = "notes";
+  viewerPanel = "transcript";
   openPacketMenu = null;
   render();
 }
@@ -1143,6 +1068,26 @@ async function browseProject(projectId: string): Promise<void> {
 }
 
 function bindEvents(): void {
+  document.querySelector("#toggle-recording-search")?.addEventListener("click", () => {
+    recordingSearchOpen = !recordingSearchOpen;
+    if (!recordingSearchOpen) recordingQuery = "";
+    render();
+    if (recordingSearchOpen) window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>("#recording-search")?.focus());
+  });
+  document.querySelector("#focus-recording-search")?.addEventListener("click", () => {
+    recordingSearchOpen = true;
+    render();
+    window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>("#recording-search")?.focus());
+  });
+  document.querySelector<HTMLInputElement>("#recording-search")?.addEventListener("input", (event) => {
+    recordingQuery = (event.target as HTMLInputElement).value;
+    render();
+    window.requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLInputElement>("#recording-search");
+      input?.focus();
+      input?.setSelectionRange(recordingQuery.length, recordingQuery.length);
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>(".project-item").forEach((button) => button.addEventListener("click", async () => {
     if (button.dataset.projectId) await browseProject(button.dataset.projectId);
   }));
@@ -1205,23 +1150,34 @@ function bindEvents(): void {
     else { createProjectOpen = true; render(); }
   });
   document.querySelector("#open-settings")?.addEventListener("click", () => {
-    activeView = "settings";
-    settingsSection = "appearance";
+    activeView = activeView === "settings" ? "project" : "settings";
+    if (activeView === "settings") settingsSection = "appearance";
     openPacketMenu = null;
     openProjectMenu = null;
-    render();
-  });
-  document.querySelector("#close-settings")?.addEventListener("click", () => {
-    activeView = "project";
     render();
   });
   document.querySelector("#download-model")?.addEventListener("click", () => { void downloadQualityModel(); });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((button) => button.addEventListener("click", () => {
     const section = button.dataset.settingsSection;
-    settingsSection = section === "shortcuts" || section === "transcription" || section === "storage" ? section : "appearance";
-    render();
-    window.requestAnimationFrame(() => document.querySelector(`#${settingsSection}-settings`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    settingsSection = section === "connections" || section === "shortcuts" || section === "transcription" || section === "storage" ? section : "appearance";
+    document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((item) => item.classList.toggle("selected", item.dataset.settingsSection === settingsSection));
+    document.querySelector<HTMLElement>(`#${settingsSection}-settings`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }));
+  const settingsContent = document.querySelector<HTMLElement>(".settings-content");
+  settingsContent?.addEventListener("scroll", () => {
+    const sections = ["appearance", "connections", "shortcuts", "transcription", "storage"] as const;
+    const marker = settingsContent.getBoundingClientRect().top + 72;
+    let visibleSection: typeof sections[number] = settingsContent.scrollTop + settingsContent.clientHeight >= settingsContent.scrollHeight - 4 ? "storage" : "appearance";
+    if (visibleSection !== "storage") {
+      for (const section of sections) {
+        const element = document.querySelector<HTMLElement>(`#${section}-settings`);
+        if (element && element.getBoundingClientRect().top <= marker) visibleSection = section;
+      }
+    }
+    if (visibleSection === settingsSection) return;
+    settingsSection = visibleSection;
+    document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((item) => item.classList.toggle("selected", item.dataset.settingsSection === settingsSection));
+  }, { passive: true });
   document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => {
     setTheme((button.dataset.themeChoice ?? "system") as ThemePreference);
   }));
@@ -1352,6 +1308,29 @@ function bindEvents(): void {
 
   document.querySelector("#copy-path")?.addEventListener("click", async () => {
     const project = activeProject(); if (!project) return;
+    if (project.id === "__unprojected__") {
+      if (!isTauri) {
+        project.path = "~/Documents/Dicta/General";
+        project.storage_path = project.path;
+        project.branch_path = project.path;
+        render();
+        showToast("General folder updated");
+        return;
+      }
+      const chosen = await open({ directory: true, multiple: false, title: "Choose the General recordings folder", defaultPath: project.path });
+      if (typeof chosen !== "string") return;
+      try {
+        const updated = await invoke<Project>("set_general_path", { path: chosen });
+        projects = projects.map((item) => item.id === updated.id ? updated : item);
+        await refreshRecordings();
+        render();
+        showToast("General folder updated");
+      } catch (error) {
+        status.last_error = String(error);
+        render();
+      }
+      return;
+    }
     await copyText(project.path); showToast("Project path copied");
   });
   document.querySelector("#refresh-branch")?.addEventListener("click", async () => {
@@ -1440,7 +1419,8 @@ function bindEvents(): void {
     setMarkedTime(video?.currentTime ?? viewerTime, false);
   });
   document.querySelectorAll<HTMLButtonElement>("[data-viewer-panel]").forEach((button) => button.addEventListener("click", () => {
-    viewerPanel = button.dataset.viewerPanel === "transcript" ? "transcript" : "notes";
+    const panel = button.dataset.viewerPanel;
+    viewerPanel = panel === "chapters" ? "chapters" : panel === "notes" ? "notes" : "transcript";
     render();
   }));
   document.querySelector<HTMLTextAreaElement>("#timeline-note-input")?.addEventListener("input", (event) => {
@@ -1488,7 +1468,12 @@ function bindEvents(): void {
     const keyboardEvent = event as KeyboardEvent;
     const target = keyboardEvent.target as HTMLElement;
     const editing = target.matches("input, textarea, button");
-    if (keyboardEvent.key === "Escape") closePacketViewer();
+    if (keyboardEvent.key === "Escape" && recordingSearchOpen) {
+      recordingSearchOpen = false;
+      recordingQuery = "";
+      render();
+      return;
+    }
     if (editing) return;
     const video = document.querySelector<HTMLVideoElement>("#packet-video");
     if (!video) return;
@@ -1499,7 +1484,13 @@ function bindEvents(): void {
   });
   document.querySelectorAll<HTMLElement>("[data-reveal]").forEach((node) => node.addEventListener("click", () => reveal(node.dataset.reveal)));
   document.querySelectorAll<HTMLButtonElement>("[data-menu]").forEach((button) => button.addEventListener("click", (event) => {
-    event.stopPropagation(); openPacketMenu = openPacketMenu === button.dataset.menu ? null : button.dataset.menu ?? null; render();
+    event.stopPropagation();
+    const recordingId = button.dataset.menu ?? null;
+    const surface = button.dataset.menuSurface === "detail" ? "detail" : "index";
+    const isOpen = openPacketMenu === recordingId && openPacketMenuSurface === surface;
+    openPacketMenu = isOpen ? null : recordingId;
+    openPacketMenuSurface = isOpen ? null : surface;
+    render();
   }));
   document.querySelectorAll<HTMLElement>("[data-copy-video]").forEach((node) => node.addEventListener("click", async () => {
     await copyText(node.dataset.copyVideo ?? ""); openPacketMenu = null; showToast("Video path copied");
@@ -1673,11 +1664,24 @@ function mockCreateProject(name: string): Project {
 function mockRecordings(projectId: string | null): Recording[] {
   if (projectId !== "api-integration") return [];
   const base = new Date();
-  const item = (id: string, note: string, seconds: number, hourOffset: number, success = true): Recording => ({ id, project_id: projectId, video_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.mp4`, metadata_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.json`, note, recording_scope: "branch", git_branch: "feature/oauth", started_at: new Date(base.getTime() - hourOffset * 3_600_000).toISOString(), ended_at: base.toISOString(), duration_seconds: seconds, size_bytes: 12_000_000, success, transcript: success ? `${note}. Walk through the relevant files, then show the failure and the expected behavior.` : null, transcript_path: success ? `/mock/${id}.transcript.md` : null, transcript_segments: success ? [{ start_seconds: 4, end_seconds: 11, text: `${note}. Walk through the relevant files.` }, { start_seconds: 12, end_seconds: 19, text: "Then show the failure and the expected behavior." }] : [], transcription_status: success ? "complete" : "processing", transcription_error: null, transcription_language: "en", poster_path: null, timeline_notes: id === "authentication-edge-cases" ? [
+  const transcriptSegments = [
+    { start_seconds: 0, end_seconds: 9, text: "In this recording, I’ll walk through the authentication edge cases we need to handle for the OAuth flow." },
+    { start_seconds: 10, end_seconds: 37, text: "First, let’s talk about expired access tokens. When a request comes in with an expired token, we should return a 401 with the WWW-Authenticate header and an error code of token_expired." },
+    { start_seconds: 38, end_seconds: 50, text: "If the refresh token is valid, the client can use it to get a new access token and retry the request." },
+    { start_seconds: 51, end_seconds: 71, text: "Next, consider revoked refresh tokens. In that case, we must return 401 invalid_grant and force the user to re-authenticate." },
+    { start_seconds: 72, end_seconds: 90, text: "Another case is missing scopes. If the token is valid but doesn’t include the required scope, return 403 insufficient_scope." },
+    { start_seconds: 91, end_seconds: 107, text: "Finally, for rate limiting on token endpoints, respond with 429 and include a Retry-After header." },
+    { start_seconds: 108, end_seconds: 128, text: "I’ll add examples for each case in the API docs and update the error handling middleware to standardize these responses." },
+  ];
+  const item = (id: string, note: string, seconds: number, hourOffset: number, success = true): Recording => ({ id, project_id: projectId, video_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.mp4`, metadata_path: `~/Documents/Dicta/api-integration/branches/feature__oauth/${id}.json`, note, recording_scope: "branch", git_branch: "feature/oauth", started_at: new Date(base.getTime() - hourOffset * 3_600_000).toISOString(), ended_at: base.toISOString(), duration_seconds: seconds, size_bytes: 12_000_000, success, transcript: success ? transcriptSegments.map((segment) => segment.text).join(" ") : null, transcript_path: success ? `/mock/${id}.transcript.md` : null, transcript_segments: success ? transcriptSegments : [], transcription_status: success ? "complete" : "processing", transcription_error: null, transcription_language: "en", poster_path: null, timeline_notes: id === "20260818-15-53-49" ? [
     { id: "demo-note-1", timestamp_seconds: 22, text: "The expired-token response should preserve the original request ID.", created_at: base.toISOString(), source: "typed" },
     { id: "demo-note-2", timestamp_seconds: 74, text: "Compare this refresh path with the retry behavior shown later.", created_at: base.toISOString(), source: "voice" },
   ] : [] });
-  return [item("authentication-edge-cases", "Authentication edge cases", 138, 1), item("webhook-payload", "Webhook payload", 282, 2, false), item("retry-behavior", "Retry behavior", 96, 3)];
+  return [
+    item("20260818-15-53-49", "Authentication edge cases", 1721, 1),
+    item("20260818-14-22-08", "Webhook payload design", 1156, 2, false),
+    item("20260817-18-04-31", "Retry behavior and backoff", 963, 26),
+  ];
 }
 
 async function downloadQualityModel(): Promise<void> {
@@ -1782,7 +1786,7 @@ async function initialize(): Promise<void> {
     });
   } else {
     projects = [
-      { id: "__unprojected__", name: "General", path: "~/Documents/Dicta/unprojected", storage_path: "~/Documents/Dicta/unprojected", source_path: null, git_branch: null, branch_path: "~/Documents/Dicta/unprojected", is_git: false, git_error: null, created_at: new Date(0).toISOString(), recording_count: 0 },
+      { id: "__unprojected__", name: "General", path: "~/Documents/Dicta/General", storage_path: "~/Documents/Dicta/General", source_path: null, git_branch: null, branch_path: "~/Documents/Dicta/General", is_git: false, git_error: null, created_at: new Date(0).toISOString(), recording_count: 0 },
       mockProject("api-integration", "API integration", "feature/oauth", 3),
       mockProject("billing-rewrite", "Billing rewrite", "main", 0),
       mockProject("search-prototype", "Search prototype", "prototype/ranking", 0),

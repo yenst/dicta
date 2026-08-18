@@ -19,6 +19,8 @@ src-tauri/gen/schemas/
 outputs/
 work/
 design-qa.md
+design-qa-*
+.design-qa-*
 *-implementation.png
 mobbin-*-reference.png
 

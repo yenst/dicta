@@ -96,6 +96,7 @@ export interface AppSettings {
   cleanup_merged_videos: boolean;
   branch_locking: boolean;
   transcription_language: string;
+  general_path: string | null;
 }
 
 export interface CleanupSummary {

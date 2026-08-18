@@ -184,6 +184,8 @@ struct AppSettings {
     branch_locking: bool,
     #[serde(default = "default_language")]
     transcription_language: String,
+    #[serde(default)]
+    general_path: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -193,6 +195,7 @@ impl Default for AppSettings {
             cleanup_merged_videos: true,
             branch_locking: true,
             transcription_language: default_language(),
+            general_path: None,
         }
     }
 }
@@ -798,7 +801,10 @@ fn slugify(name: &str) -> String {
 
 fn project_dir(root: &Path, project_id: &str) -> PathBuf {
     if project_id == UNPROJECTED_ID {
-        root.join("unprojected")
+        read_settings(root)
+            .general_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("General"))
     } else {
         root.join(project_id)
     }
@@ -811,6 +817,24 @@ fn unprojected_metadata() -> ProjectFile {
         created_at: DateTime::<Utc>::from(std::time::UNIX_EPOCH),
         source_path: None,
     }
+}
+
+#[tauri::command]
+fn set_general_path(state: State<'_, AppState>, path: String) -> Result<Project, String> {
+    let target = PathBuf::from(path.trim());
+    if target.as_os_str().is_empty() {
+        return Err("Choose a folder for General recordings".to_string());
+    }
+    fs::create_dir_all(&target)
+        .map_err(|error| format!("Could not create {}: {error}", target.display()))?;
+    if !target.is_dir() {
+        return Err(format!("{} is not a folder", target.display()));
+    }
+    let canonical = target.canonicalize().unwrap_or(target);
+    let mut settings = read_settings(&state.root);
+    settings.general_path = Some(path_string(&canonical));
+    write_settings(&state.root, &settings)?;
+    Ok(project_view(&state.root, unprojected_metadata()))
 }
 
 fn linked_storage_dir(metadata: &ProjectFile) -> Option<PathBuf> {
@@ -3004,6 +3028,11 @@ pub fn run() {
         preferred_root
     };
     fs::create_dir_all(&root).expect("failed to create Dicta folder");
+    let old_general = root.join("unprojected");
+    let general = root.join("General");
+    if old_general.is_dir() && !general.exists() {
+        let _ = fs::rename(&old_general, &general);
+    }
 
     let settings = read_settings(&root);
     let shortcut = shortcut_for_id(&settings.shortcut_id)
@@ -3024,6 +3053,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             mcp_status,
+            set_general_path,
             configure_codex_mcp,
             restart_codex_mcp,
             model_status,
@@ -3315,6 +3345,7 @@ mod tests {
             cleanup_merged_videos: false,
             branch_locking: false,
             transcription_language: "en".to_string(),
+            general_path: None,
         };
         write_settings(&root, &settings).unwrap();
         let restored = read_settings(&root);
@@ -3333,6 +3364,7 @@ mod tests {
             cleanup_merged_videos: true,
             branch_locking: true,
             transcription_language: "auto".to_string(),
+            general_path: None,
         });
         assert_eq!(settings.shortcut_id, "alt_shift_r");
     }
@@ -3492,7 +3524,7 @@ mod tests {
 
         let (branch, path) = active_recording_root(&storage, &unprojected_metadata()).unwrap();
         assert_eq!(branch, None);
-        assert_eq!(path, storage.join("unprojected"));
+        assert_eq!(path, storage.join("General"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3688,6 +3720,7 @@ mod tests {
             cleanup_merged_videos: true,
             branch_locking: true,
             transcription_language: "xx".into(),
+            general_path: None,
         });
         assert_eq!(settings.transcription_language, DEFAULT_LANGUAGE);
     }
