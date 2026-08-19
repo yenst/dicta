@@ -3012,6 +3012,36 @@ fn toggle_from_shortcut(app: &AppHandle) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn start_wayland_control_socket(app: AppHandle) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let socket_path = runtime_dir.join("dicta-control.sock");
+    if socket_path.exists() {
+        fs::remove_file(&socket_path)
+            .map_err(|error| format!("Could not replace the Dicta control socket: {error}"))?;
+    }
+    let listener = UnixListener::bind(&socket_path)
+        .map_err(|error| format!("Could not open the Dicta control socket: {error}"))?;
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("Could not secure the Dicta control socket: {error}"))?;
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut command = String::new();
+            if BufReader::new(stream).read_line(&mut command).is_ok()
+                && command.trim() == "toggle-recording"
+            {
+                toggle_from_shortcut(&app);
+            }
+        }
+    });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let documents = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -3084,8 +3114,16 @@ pub fn run() {
         ])
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_decorations(false)?;
+            }
             let _ = install_mcp_binary(app.handle());
             ensure_default_project_selection(app.handle());
+            #[cfg(target_os = "linux")]
+            if let Err(error) = start_wayland_control_socket(app.handle().clone()) {
+                eprintln!("{error}");
+            }
             let root = app.state::<AppState>().root.clone();
             queue_pending_transcriptions(&root);
             #[cfg(target_os = "macos")]

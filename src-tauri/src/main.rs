@@ -30,7 +30,31 @@ fn configure_webkit_renderer() {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn send_control_command() -> bool {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    if !std::env::args().any(|argument| argument == "--toggle-recording") {
+        return false;
+    }
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    match UnixStream::connect(runtime_dir.join("dicta-control.sock"))
+        .and_then(|mut stream| stream.write_all(b"toggle-recording\n"))
+    {
+        Ok(()) => {}
+        Err(error) => eprintln!("Could not contact the running Dicta app: {error}"),
+    }
+    true
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    if send_control_command() {
+        return;
+    }
     #[cfg(target_os = "linux")]
     configure_webkit_renderer();
     dicta_lib::run();

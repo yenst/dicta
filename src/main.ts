@@ -6,12 +6,14 @@ import codexLightUrl from "./assets/codex-light.png";
 import codexDarkUrl from "./assets/codex-dark.png";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppSettings, Bootstrap, CleanupSummary, McpStatus, ModelDownloadEvent, ModelStatus, Project, RecorderEvent, Recording, Status, TimelineNote } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const isTauri = "__TAURI_INTERNALS__" in window && !(import.meta.env.DEV && new URLSearchParams(window.location.search).has("demo"));
 const isMacPlatform = /Mac|iPhone|iPad/.test(navigator.platform);
+const isLinuxPlatform = /Linux/.test(navigator.platform);
 const platformName = isMacPlatform ? "Mac" : "Linux computer";
 const defaultShortcutId = isMacPlatform ? "command_shift_r" : "alt_shift_r";
 
@@ -289,7 +291,19 @@ function render(): void {
   const viewing = recordings.find((recording) => recording.id === viewingRecordingId);
 
   app.innerHTML = `
-    <main class="app-shell">
+    <main class="app-shell ${isLinuxPlatform ? "linux-shell" : ""}">
+      ${isLinuxPlatform ? `
+        <header class="linux-titlebar" data-tauri-drag-region>
+          <div class="linux-titlebar-brand" data-tauri-drag-region>
+            <img src="${dictaMarkUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+            <strong data-tauri-drag-region>Dicta</strong>
+          </div>
+          <div class="linux-titlebar-drag" data-tauri-drag-region></div>
+          <button class="linux-titlebar-close" id="window-close" type="button" aria-label="Close Dicta" title="Close">
+            <i class="ph ph-x" aria-hidden="true"></i>
+          </button>
+        </header>
+      ` : ""}
       <aside class="sidebar">
         ${isMacPlatform ? `<div class="sidebar-chrome-space" data-tauri-drag-region></div>` : ""}
         <div class="sidebar-brand" data-tauri-drag-region>
@@ -1155,6 +1169,9 @@ function bindEvents(): void {
     openPacketMenu = null;
     openProjectMenu = null;
     render();
+  });
+  document.querySelector("#window-close")?.addEventListener("click", () => {
+    if (isTauri) void getCurrentWindow().close();
   });
   document.querySelector("#download-model")?.addEventListener("click", () => { void downloadQualityModel(); });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((button) => button.addEventListener("click", () => {

@@ -610,6 +610,95 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   .review-body { grid-template-columns: minmax(0, 1fr) 330px; }
   .review-stage { padding-right: 20px; padding-left: 20px; }
 }
+
+/* Integrated Linux window chrome */
+.app-shell.linux-shell {
+  grid-template-rows: 40px minmax(0, 1fr);
+}
+
+.linux-titlebar {
+  z-index: 200;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr) 40px;
+  align-items: stretch;
+  border-bottom: 1px solid #dfe2e6;
+  background: #f8f9fa;
+  user-select: none;
+}
+
+.linux-titlebar-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 20px;
+  color: #1d2025;
+}
+
+.linux-titlebar-brand img {
+  width: 22px;
+  height: 27px;
+  object-fit: contain;
+}
+
+.linux-titlebar-brand strong {
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: -.015em;
+}
+
+.linux-titlebar-drag { min-width: 0; background: #fff; }
+
+.linux-titlebar-close {
+  width: 40px;
+  height: 39px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #60656d;
+  background: #fff;
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.linux-titlebar-close:hover { color: #202329; background: #eceef1; }
+.linux-titlebar-close:active { background: #e2e5e9; }
+
+.linux-shell > .sidebar,
+.linux-shell > .workspace {
+  grid-row: 2;
+}
+
+.linux-shell > .sidebar { grid-column: 1; padding-top: 18px; }
+.linux-shell > .workspace { grid-column: 2; }
+.linux-shell .sidebar-chrome-space,
+.linux-shell .sidebar-brand { display: none; }
+.linux-shell .sidebar-section-label { margin-top: 10px; }
+
+[data-theme="dark"] .linux-titlebar {
+  border-color: #2a3038;
+  background: #171b21;
+}
+
+[data-theme="dark"] .linux-titlebar-brand { color: #f0f2f4; }
+[data-theme="dark"] .linux-titlebar-brand img { filter: invert(1) brightness(1.9); }
+[data-theme="dark"] .linux-titlebar-drag,
+[data-theme="dark"] .linux-titlebar-close { background: #111419; }
+[data-theme="dark"] .linux-titlebar-close { color: #a7adb6; }
+[data-theme="dark"] .linux-titlebar-close:hover { color: #fff; background: #252a31; }
+
+@media (max-width: 1180px) {
+  .linux-titlebar { grid-template-columns: 235px minmax(0, 1fr) 40px; }
+}
+
+@media (max-width: 900px) {
+  .linux-titlebar { grid-template-columns: 205px minmax(0, 1fr) 40px; }
+}
 @media (max-height: 700px) {
   .packet-review { grid-template-rows: 56px minmax(0, 1fr); }
   .review-stage { padding-top: 16px; padding-bottom: 14px; }
