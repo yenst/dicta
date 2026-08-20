@@ -1,6 +1,7 @@
 import "@phosphor-icons/web/regular";
 import "./style.css";
 import dictaMarkUrl from "./assets/dicta-mark.png";
+import dictaMarkLightUrl from "./assets/dicta-mark-light.png";
 import demoRecordingPosterUrl from "./assets/demo-recording-poster.png";
 import codexLightUrl from "./assets/codex-light.png";
 import codexDarkUrl from "./assets/codex-dark.png";
@@ -295,7 +296,8 @@ function render(): void {
       ${isLinuxPlatform ? `
         <header class="linux-titlebar" data-tauri-drag-region>
           <div class="linux-titlebar-brand" data-tauri-drag-region>
-            <img src="${dictaMarkUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+            <img class="dicta-mark-default" src="${dictaMarkUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+            <img class="dicta-mark-dark" src="${dictaMarkLightUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
             <strong data-tauri-drag-region>Dicta</strong>
           </div>
           <div class="linux-titlebar-drag" data-tauri-drag-region></div>
@@ -307,7 +309,8 @@ function render(): void {
       <aside class="sidebar">
         ${isMacPlatform ? `<div class="sidebar-chrome-space" data-tauri-drag-region></div>` : ""}
         <div class="sidebar-brand" data-tauri-drag-region>
-          <img src="${dictaMarkUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+          <img class="dicta-mark-default" src="${dictaMarkUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
+          <img class="dicta-mark-dark" src="${dictaMarkLightUrl}" alt="" aria-hidden="true" data-tauri-drag-region />
           <strong data-tauri-drag-region>Dicta</strong>
         </div>
         <div class="sidebar-section-label">Projects</div>

@@ -644,6 +644,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   object-fit: contain;
 }
 
+.dicta-mark-dark { display: none; }
+
 .linux-titlebar-brand strong {
   font-size: 14px;
   font-weight: 680;
@@ -686,7 +688,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 }
 
 [data-theme="dark"] .linux-titlebar-brand { color: #f0f2f4; }
-[data-theme="dark"] .linux-titlebar-brand img { filter: invert(1) brightness(1.9); }
+[data-theme="dark"] .dicta-mark-default { display: none; }
+[data-theme="dark"] .dicta-mark-dark { display: block; }
 [data-theme="dark"] .linux-titlebar-drag,
 [data-theme="dark"] .linux-titlebar-close { background: #111419; }
 [data-theme="dark"] .linux-titlebar-close { color: #a7adb6; }
@@ -1190,10 +1193,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 
 [data-theme="dark"] .sidebar-brand {
   color: #f5f6f8;
-}
-
-[data-theme="dark"] .sidebar-brand img {
-  filter: invert(1);
 }
 
 [data-theme="dark"] .sidebar-section-label,

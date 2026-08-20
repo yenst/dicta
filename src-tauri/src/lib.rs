@@ -3156,11 +3156,28 @@ pub fn run() {
                         }
                     }
                 });
-            if let Ok(icon) =
-                tauri::image::Image::from_bytes(include_bytes!("../assets/dicta-tray@2x.png"))
+            #[cfg(target_os = "macos")]
             {
-                tray = tray.icon(icon).icon_as_template(true);
-            } else if let Some(icon) = app.default_window_icon() {
+                if let Ok(icon) =
+                    tauri::image::Image::from_bytes(include_bytes!("../assets/dicta-tray@2x.png"))
+                {
+                    tray = tray.icon(icon).icon_as_template(true);
+                } else if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!(
+                    "../../src/assets/dicta-mark-light.png"
+                )) {
+                    tray = tray.icon(icon);
+                } else if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;

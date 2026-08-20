@@ -2,7 +2,7 @@ use crate::platform::NativeCallback;
 use serde_json::json;
 use std::{
     env,
-    ffi::CString,
+    ffi::{CString, OsString},
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -13,6 +13,77 @@ use std::{
 
 static RECORDER: OnceLock<Mutex<Option<RecorderProcess>>> = OnceLock::new();
 const NARRATION_FILTER: &str = "loudnorm=I=-16:LRA=11:TP=-1.5";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecorderBackend {
+    FfmpegX11,
+    Spectacle,
+    WfRecorder,
+}
+
+#[derive(Clone, Copy)]
+struct CaptureEnvironment {
+    is_wayland: bool,
+    is_kde: bool,
+    spectacle_available: bool,
+    wf_recorder_available: bool,
+}
+
+impl CaptureEnvironment {
+    fn current() -> Self {
+        Self {
+            is_wayland: is_wayland_session(),
+            is_kde: env::var("XDG_CURRENT_DESKTOP")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("kde"),
+            spectacle_available: executable_exists("spectacle"),
+            wf_recorder_available: executable_exists("wf-recorder"),
+        }
+    }
+}
+
+impl RecorderBackend {
+    fn detect(override_backend: &str, environment: CaptureEnvironment) -> Result<Self, String> {
+        match override_backend {
+            "ffmpeg-x11" => return Ok(Self::FfmpegX11),
+            "spectacle" => return Ok(Self::Spectacle),
+            "wf-recorder" => return Ok(Self::WfRecorder),
+            "" => {}
+            value => {
+                return Err(format!(
+                    "Unsupported DICTA_SCREEN_RECORDER value `{value}`. Use `ffmpeg-x11`, `spectacle`, or `wf-recorder`."
+                ));
+            }
+        }
+
+        if !environment.is_wayland {
+            return Ok(Self::FfmpegX11);
+        }
+        if environment.is_kde && environment.spectacle_available {
+            return Ok(Self::Spectacle);
+        }
+        if environment.wf_recorder_available {
+            return Ok(Self::WfRecorder);
+        }
+        Err("This Wayland desktop needs a supported recorder. Install `wf-recorder`, or set DICTA_SCREEN_RECORDER=ffmpeg-x11 when an X11 display is available.".to_string())
+    }
+
+    fn start(self, output_path: &Path) -> Result<RecorderProcess, String> {
+        match self {
+            Self::FfmpegX11 => start_ffmpeg_x11(output_path),
+            Self::Spectacle => start_spectacle(output_path),
+            Self::WfRecorder => start_wf_recorder(output_path),
+        }
+    }
+
+    fn started_message(self) -> &'static str {
+        match self {
+            Self::Spectacle => "Click a window on the screen you want Plasma to record",
+            Self::FfmpegX11 | Self::WfRecorder => "Display and microphone capture started",
+        }
+    }
+}
 
 enum RecorderProcess {
     Direct {
@@ -146,6 +217,25 @@ fn start_ffmpeg_x11(output_path: &Path) -> Result<RecorderProcess, String> {
 }
 
 fn start_wf_recorder(output_path: &Path) -> Result<RecorderProcess, String> {
+    let selected_output = if executable_exists("slurp") {
+        let selection = Command::new("slurp")
+            .args(["-o", "-f", "%o"])
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|error| format!("Could not open the display picker: {error}"))?;
+        if !selection.status.success() {
+            let message = String::from_utf8_lossy(&selection.stderr);
+            return Err(if message.trim().is_empty() {
+                "Display selection was cancelled".to_string()
+            } else {
+                format!("Could not select a display: {}", message.trim())
+            });
+        }
+        Some(parse_selected_output(&selection.stdout)?)
+    } else {
+        None
+    };
+
     let mut command = silent_command("wf-recorder");
     command.args([
         "--audio",
@@ -161,9 +251,11 @@ fn start_wf_recorder(output_path: &Path) -> Result<RecorderProcess, String> {
         "aac",
         "--framerate",
         "30",
-        "--file",
     ]);
-    command.arg(output_path);
+    command.args(wf_recorder_output_args(
+        output_path,
+        selected_output.as_deref(),
+    ));
     let child = command
         .spawn()
         .map_err(|error| format!("Could not start wf-recorder: {error}"))?;
@@ -173,6 +265,26 @@ fn start_wf_recorder(output_path: &Path) -> Result<RecorderProcess, String> {
         stop_with_interrupt: true,
         normalize_after: true,
     })
+}
+
+fn wf_recorder_output_args(output_path: &Path, selected_output: Option<&str>) -> Vec<OsString> {
+    let mut arguments = Vec::with_capacity(if selected_output.is_some() { 4 } else { 2 });
+    if let Some(output) = selected_output {
+        arguments.push("--output".into());
+        arguments.push(output.into());
+    }
+    arguments.push("--file".into());
+    arguments.push(output_path.as_os_str().to_owned());
+    arguments
+}
+
+fn parse_selected_output(output: &[u8]) -> Result<String, String> {
+    let output = String::from_utf8_lossy(output).trim().to_string();
+    if output.is_empty() {
+        Err("Display selection was cancelled".to_string())
+    } else {
+        Ok(output)
+    }
 }
 
 fn start_spectacle(output_path: &Path) -> Result<RecorderProcess, String> {
@@ -299,41 +411,20 @@ pub(crate) fn start_recording(output_path: &str, callback: NativeCallback) -> Re
     }
 
     let output_path = PathBuf::from(output_path);
-    let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-    let override_backend = env::var("DICTA_SCREEN_RECORDER").unwrap_or_default();
-    let mut process = if override_backend == "ffmpeg-x11" {
-        start_ffmpeg_x11(&output_path)?
-    } else if override_backend == "spectacle" {
-        start_spectacle(&output_path)?
-    } else if override_backend == "wf-recorder" {
-        start_wf_recorder(&output_path)?
-    } else if !is_wayland_session() {
-        start_ffmpeg_x11(&output_path)?
-    } else if desktop.to_ascii_lowercase().contains("kde") && executable_exists("spectacle") {
-        start_spectacle(&output_path)?
-    } else if executable_exists("wf-recorder") {
-        start_wf_recorder(&output_path)?
-    } else {
-        return Err("This Wayland desktop needs a supported recorder. Install `wf-recorder`, or set DICTA_SCREEN_RECORDER=ffmpeg-x11 when an X11 display is available.".to_string());
-    };
+    let backend = RecorderBackend::detect(
+        &env::var("DICTA_SCREEN_RECORDER").unwrap_or_default(),
+        CaptureEnvironment::current(),
+    )?;
+    let mut process = backend.start(&output_path)?;
 
     thread::sleep(Duration::from_millis(800));
     if process_exited(&mut process)? {
         abort_process(&mut process);
         return Err("The Linux screen recorder exited before capture started. Check screen-recording and microphone permissions.".to_string());
     }
-    let needs_screen_selection = matches!(&process, RecorderProcess::Spectacle { .. });
     *slot = Some(process);
     drop(slot);
-    emit(
-        callback,
-        "started",
-        if needs_screen_selection {
-            "Click a window on the screen you want Plasma to record"
-        } else {
-            "Screen and microphone capture started"
-        },
-    );
+    emit(callback, "started", backend.started_message());
     Ok(())
 }
 
@@ -627,4 +718,100 @@ pub(crate) fn extract_poster(input_path: &str, output_path: &str) -> bool {
         .arg(output_path)
         .status()
         .is_ok_and(|status| status.success() && Path::new(output_path).is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wayland_environment() -> CaptureEnvironment {
+        CaptureEnvironment {
+            is_wayland: true,
+            is_kde: false,
+            spectacle_available: false,
+            wf_recorder_available: true,
+        }
+    }
+
+    #[test]
+    fn recorder_overrides_bypass_desktop_detection() {
+        let environment = CaptureEnvironment {
+            is_wayland: false,
+            is_kde: false,
+            spectacle_available: false,
+            wf_recorder_available: false,
+        };
+
+        assert_eq!(
+            RecorderBackend::detect("ffmpeg-x11", environment).unwrap(),
+            RecorderBackend::FfmpegX11
+        );
+        assert_eq!(
+            RecorderBackend::detect("spectacle", environment).unwrap(),
+            RecorderBackend::Spectacle
+        );
+        assert_eq!(
+            RecorderBackend::detect("wf-recorder", environment).unwrap(),
+            RecorderBackend::WfRecorder
+        );
+    }
+
+    #[test]
+    fn recorder_detection_stays_specific_to_the_linux_session() {
+        let x11 = CaptureEnvironment {
+            is_wayland: false,
+            ..wayland_environment()
+        };
+        assert_eq!(
+            RecorderBackend::detect("", x11).unwrap(),
+            RecorderBackend::FfmpegX11
+        );
+
+        let kde = CaptureEnvironment {
+            is_kde: true,
+            spectacle_available: true,
+            ..wayland_environment()
+        };
+        assert_eq!(
+            RecorderBackend::detect("", kde).unwrap(),
+            RecorderBackend::Spectacle
+        );
+        assert_eq!(
+            RecorderBackend::detect("", wayland_environment()).unwrap(),
+            RecorderBackend::WfRecorder
+        );
+    }
+
+    #[test]
+    fn unsupported_recorder_configuration_is_reported() {
+        let error = RecorderBackend::detect("unknown", wayland_environment()).unwrap_err();
+        assert!(error.contains("Unsupported DICTA_SCREEN_RECORDER"));
+
+        let unavailable = CaptureEnvironment {
+            wf_recorder_available: false,
+            ..wayland_environment()
+        };
+        let error = RecorderBackend::detect("", unavailable).unwrap_err();
+        assert!(error.contains("needs a supported recorder"));
+    }
+
+    #[test]
+    fn display_picker_output_is_trimmed_and_required() {
+        assert_eq!(parse_selected_output(b"DP-1\n").unwrap(), "DP-1");
+        assert_eq!(
+            parse_selected_output(b"  ").unwrap_err(),
+            "Display selection was cancelled"
+        );
+    }
+
+    #[test]
+    fn wf_recorder_output_precedes_the_file_argument() {
+        let arguments = wf_recorder_output_args(Path::new("/tmp/recording.mp4"), Some("DP-1"));
+        assert_eq!(
+            arguments,
+            ["--output", "DP-1", "--file", "/tmp/recording.mp4"]
+                .map(OsString::from)
+                .to_vec()
+        );
+    }
 }
