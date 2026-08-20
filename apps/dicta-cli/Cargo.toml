@@ -1,0 +1,15 @@
+[package]
+name = "dicta-cli"
+version = "0.8.0"
+description = "Lean command-line client for native Dicta"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "dicta"
+path = "src/main.rs"
+
+[dependencies]
+dicta-control = { path = "../../crates/dicta-control" }
+dicta-core = { path = "../../crates/dicta-core" }
+serde_json.workspace = true

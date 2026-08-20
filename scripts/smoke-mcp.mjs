@@ -41,5 +41,16 @@ const responses = stdout.trim().split("\n").map((line) => JSON.parse(line));
 if (responses.length !== 3) throw new Error(`Expected 3 responses, got ${responses.length}`);
 if (responses[0].error?.code !== -32700) throw new Error("Missing JSON-RPC parse error response");
 if (responses[1].result?.serverInfo?.name !== "dicta") throw new Error("Initialize response is invalid");
-if (responses[2].result?.tools?.length !== 4) throw new Error("Expected four Dicta tools");
+const toolNames = responses[2].result?.tools?.map((tool) => tool.name) ?? [];
+for (const expected of [
+  "list_projects",
+  "get_current_project",
+  "get_project_guidance",
+  "list_recordings",
+  "get_recording",
+  "get_recording_context",
+  "get_recording_frames",
+]) {
+  if (!toolNames.includes(expected)) throw new Error(`Missing Dicta tool: ${expected}`);
+}
 console.log(`MCP stdio smoke: ${responses.length} responses, ${responses[2].result.tools.length} tools`);

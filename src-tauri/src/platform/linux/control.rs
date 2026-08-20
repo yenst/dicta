@@ -6,7 +6,7 @@ use std::{
 };
 use tauri::AppHandle;
 
-pub(crate) fn start(app: AppHandle, handle_command: fn(&AppHandle)) -> Result<(), String> {
+pub(crate) fn start(app: AppHandle, handle_command: fn(&AppHandle, &str)) -> Result<(), String> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
@@ -22,10 +22,8 @@ pub(crate) fn start(app: AppHandle, handle_command: fn(&AppHandle)) -> Result<()
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut command = String::new();
-            if BufReader::new(stream).read_line(&mut command).is_ok()
-                && command.trim() == "toggle-recording"
-            {
-                handle_command(&app);
+            if BufReader::new(stream).read_line(&mut command).is_ok() {
+                handle_command(&app, command.trim());
             }
         }
     });

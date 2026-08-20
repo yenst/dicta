@@ -10,8 +10,8 @@ use std::{
 pub(crate) enum ArtifactPolicy {
     RepositoryLocal { canonical_root: PathBuf },
     ConfinedGeneral { root: PathBuf },
-    TrustedLegacyProject,
-    TrustedLegacyUnprojected,
+    LegacyProject { root: PathBuf },
+    LegacyUnprojected { root: PathBuf },
 }
 
 #[derive(Clone, Debug)]
@@ -61,14 +61,11 @@ pub(crate) fn load_recordings(source: &RecordingSource) -> Result<LoadReport, St
                     recordings_root.display()
                 ))
             }
-            ArtifactPolicy::TrustedLegacyProject | ArtifactPolicy::TrustedLegacyUnprojected => {
-                Ok(LoadReport {
-                    warnings: vec![format!(
-                        "Ignored symlinked trusted legacy recordings directory `{}`",
-                        recordings_root.display()
-                    )],
-                    ..LoadReport::default()
-                })
+            ArtifactPolicy::LegacyProject { .. } | ArtifactPolicy::LegacyUnprojected { .. } => {
+                Err(format!(
+                    "Legacy recordings directory must not be a symlink: `{}`",
+                    recordings_root.display()
+                ))
             }
         };
     }
@@ -160,8 +157,11 @@ fn validate_source(source: &RecordingSource) -> Result<bool, String> {
                     source.path.display()
                 ))
             }
-            ArtifactPolicy::TrustedLegacyProject | ArtifactPolicy::TrustedLegacyUnprojected => {
-                Ok(false)
+            ArtifactPolicy::LegacyProject { .. } | ArtifactPolicy::LegacyUnprojected { .. } => {
+                Err(format!(
+                    "Legacy recording storage must not be a symlink: `{}`",
+                    source.path.display()
+                ))
             }
         };
     }
@@ -176,8 +176,13 @@ fn validate_source(source: &RecordingSource) -> Result<bool, String> {
                 root.display()
             )
         })?,
-        ArtifactPolicy::TrustedLegacyProject | ArtifactPolicy::TrustedLegacyUnprojected => {
-            return Ok(true);
+        ArtifactPolicy::LegacyProject { root } | ArtifactPolicy::LegacyUnprojected { root } => {
+            root.canonicalize().map_err(|error| {
+                format!(
+                    "Could not resolve legacy Dicta storage at `{}`: {error}",
+                    root.display()
+                )
+            })?
         }
     };
     let canonical_source = source.path.canonicalize().map_err(|error| {
@@ -204,6 +209,9 @@ fn read_recording(metadata_path: PathBuf, policy: &ArtifactPolicy) -> Result<Rec
     if !valid_artifact_file(&metadata_path, policy) {
         return Err("metadata is not a permitted regular file".to_string());
     }
+    let metadata_path = metadata_path
+        .canonicalize()
+        .map_err(|error| format!("could not resolve metadata: {error}"))?;
     let content = fs::read_to_string(&metadata_path)
         .map_err(|error| format!("could not read metadata: {error}"))?;
     let metadata = serde_json::from_str::<Value>(&content)
@@ -230,7 +238,10 @@ fn read_recording(metadata_path: PathBuf, policy: &ArtifactPolicy) -> Result<Rec
         .trim();
     let local_video_path = metadata_path.with_extension("mp4");
     let video_path = if valid_artifact_file(&local_video_path, policy) {
-        local_video_path.to_string_lossy().into_owned()
+        local_video_path
+            .canonicalize()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
     } else {
         resolve_metadata_artifact(recorded_video_path, &metadata_path, policy)
             .map(|path| path.to_string_lossy().into_owned())
@@ -276,7 +287,10 @@ fn read_transcript(
     for file_name in [format!("{stem}.transcript.md"), format!("{stem}.md")] {
         let path = metadata_path.with_file_name(file_name);
         if valid_artifact_file(&path, policy) {
-            return fs::read_to_string(path).ok();
+            return path
+                .canonicalize()
+                .ok()
+                .and_then(|path| fs::read_to_string(path).ok());
         }
     }
     None
@@ -292,9 +306,6 @@ fn resolve_metadata_artifact(
         return None;
     }
     let path = PathBuf::from(raw_path);
-    if path.is_absolute() && matches!(policy, ArtifactPolicy::RepositoryLocal { .. }) {
-        return None;
-    }
     let candidate = if path.is_absolute() {
         path
     } else {
@@ -320,7 +331,9 @@ fn valid_artifact_file(path: &Path, policy: &ArtifactPolicy) -> bool {
         ArtifactPolicy::ConfinedGeneral { root } => root
             .canonicalize()
             .is_ok_and(|canonical_root| canonical_path.starts_with(canonical_root)),
-        ArtifactPolicy::TrustedLegacyProject | ArtifactPolicy::TrustedLegacyUnprojected => true,
+        ArtifactPolicy::LegacyProject { root } | ArtifactPolicy::LegacyUnprojected { root } => root
+            .canonicalize()
+            .is_ok_and(|canonical_root| canonical_path.starts_with(canonical_root)),
     }
 }
 
@@ -408,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_legacy_project_metadata_may_use_absolute_regular_files() {
+    fn legacy_project_metadata_cannot_escape_its_storage_root() {
         let root = tempfile::tempdir().unwrap();
         let storage = root.path().join("PromptReel/project");
         let transcript = root.path().join("legacy.md");
@@ -419,19 +432,16 @@ mod tests {
             json!({ "id": "legacy", "transcript_path": transcript, "video_path": "" }),
         );
         let source = RecordingSource {
-            path: storage,
-            policy: ArtifactPolicy::TrustedLegacyProject,
+            path: storage.clone(),
+            policy: ArtifactPolicy::LegacyProject { root: storage },
         };
-        assert_eq!(
-            load_recordings(&source).unwrap().recordings[0]
-                .transcript
-                .as_deref(),
-            Some("trusted legacy transcript")
-        );
+        assert!(load_recordings(&source).unwrap().recordings[0]
+            .transcript
+            .is_none());
     }
 
     #[test]
-    fn trusted_legacy_unprojected_metadata_may_use_absolute_regular_files() {
+    fn legacy_unprojected_metadata_cannot_escape_its_storage_root() {
         let root = tempfile::tempdir().unwrap();
         let storage = root.path().join("Dicta/unprojected");
         let transcript = root.path().join("legacy-general.md");
@@ -444,19 +454,16 @@ mod tests {
             json!({ "id": "legacy-general", "transcript_path": transcript, "video_path": video }),
         );
         let source = RecordingSource {
-            path: storage,
-            policy: ArtifactPolicy::TrustedLegacyUnprojected,
+            path: storage.clone(),
+            policy: ArtifactPolicy::LegacyUnprojected { root: storage },
         };
         let recording = &load_recordings(&source).unwrap().recordings[0];
-        assert_eq!(
-            recording.transcript.as_deref(),
-            Some("trusted legacy General transcript")
-        );
-        assert_eq!(recording.video_path, video.to_string_lossy());
+        assert!(recording.transcript.is_none());
+        assert!(recording.video_path.is_empty());
     }
 
     #[test]
-    fn trusted_legacy_symlinked_storage_is_ignored() {
+    fn legacy_symlinked_storage_is_rejected() {
         use std::os::unix::fs::symlink;
 
         let root = tempfile::tempdir().unwrap();
@@ -465,12 +472,10 @@ mod tests {
         let linked = root.path().join("linked");
         symlink(&actual, &linked).unwrap();
         let source = RecordingSource {
-            path: linked,
-            policy: ArtifactPolicy::TrustedLegacyUnprojected,
+            path: linked.clone(),
+            policy: ArtifactPolicy::LegacyUnprojected { root: linked },
         };
-        let report = load_recordings(&source).unwrap();
-        assert!(report.recordings.is_empty());
-        assert_eq!(report.warnings.len(), 1);
+        assert!(load_recordings(&source).is_err());
     }
 
     #[test]

@@ -18,6 +18,7 @@ export interface RecordingsViewModel {
   status: Status;
   shortcutLabel: string;
   viewerHtml: string;
+  recordingDrawerOpen: boolean;
 }
 
 export type RecordingIndexViewModel = Pick<RecordingsViewModel,
@@ -25,9 +26,10 @@ export type RecordingIndexViewModel = Pick<RecordingsViewModel,
 >;
 
 export function renderRecordings(vm: RecordingsViewModel): string {
-  return `<section class="packet-section split-review-workspace" data-project-id="${escapeHtml(vm.selectedProjectId ?? "")}">
-    <aside class="recording-index" aria-label="Recordings">
-      <header class="recording-index-header"><div><h2>Recordings</h2><button id="focus-recording-search" type="button" aria-label="Search and filter recordings"><i class="ph ph-funnel-simple"></i></button></div></header>
+  return `<section class="packet-section split-review-workspace ${vm.recordingDrawerOpen ? "recording-drawer-open" : ""}" data-project-id="${escapeHtml(vm.selectedProjectId ?? "")}">
+    <button class="recording-drawer-backdrop" id="close-recording-drawer" type="button" aria-label="Close recordings"></button>
+    <aside class="recording-index" aria-label="Recordings" tabindex="-1">
+      <header class="recording-index-header"><div><h2>Recordings</h2><button id="focus-recording-search" type="button" aria-label="Search and filter recordings"><i class="ph ph-funnel-simple"></i></button></div><button class="recording-drawer-close" id="recording-drawer-close" type="button" aria-label="Close recordings"><i class="ph ph-x"></i></button></header>
       <div class="recording-index-body">${renderRecordingIndexBody(vm)}</div>
     </aside>
     ${vm.viewerHtml}

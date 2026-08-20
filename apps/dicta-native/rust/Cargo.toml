@@ -1,0 +1,27 @@
+[package]
+name = "dicta-native-bridge"
+version = "0.8.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+dicta-capture = { path = "../../../crates/dicta-capture" }
+dicta-control = { path = "../../../crates/dicta-control" }
+dicta-core = { path = "../../../crates/dicta-core" }
+dicta-engine = { path = "../../../crates/dicta-engine" }
+dicta-linux = { path = "../../../crates/dicta-linux" }
+dicta-overlay = { path = "../../../crates/dicta-overlay" }
+dicta-runtime = { path = "../../../crates/dicta-runtime" }
+dicta-transcribe = { path = "../../../crates/dicta-transcribe" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

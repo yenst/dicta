@@ -1,0 +1,41 @@
+#include "overlay_placement.h"
+
+#include <QQuickWindow>
+#include <QScreen>
+
+namespace {
+class QtToplevelPlacement final : public OverlayPlacementPort
+{
+public:
+    [[nodiscard]] QString mode() const override
+    {
+        return QStringLiteral("best_effort_qt_toplevel");
+    }
+
+    [[nodiscard]] bool guaranteesLayerShell() const override
+    {
+        return false;
+    }
+
+    bool show(QQuickWindow &window, QScreen &screen, QString *error) override
+    {
+        if (screen.geometry().isEmpty()) {
+            if (error != nullptr) {
+                *error = QStringLiteral("The selected output has no usable geometry.");
+            }
+            return false;
+        }
+
+        window.hide();
+        window.setScreen(&screen);
+        window.setGeometry(screen.geometry());
+        window.showFullScreen();
+        return true;
+    }
+};
+}
+
+std::unique_ptr<OverlayPlacementPort> createOverlayPlacementPort()
+{
+    return std::make_unique<QtToplevelPlacement>();
+}

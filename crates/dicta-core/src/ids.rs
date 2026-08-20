@@ -96,6 +96,7 @@ macro_rules! persisted_id {
 
 persisted_id!(ProjectId, "project");
 persisted_id!(RecordingId, "recording");
+persisted_id!(AnnotationId, "annotation");
 
 #[cfg(test)]
 mod tests {

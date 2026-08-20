@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "dicta.context",
+  "name": "Dicta context",
+  "version": "0.8.0",
+  "author": "Dicta",
+  "license": "MIT",
+  "description": "Search Dicta projects, open one in Dicta, and copy recent recording context from the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Dicta context",
+    "description": "Open linked projects and copy recent Dicta recording context without leaving the Omarchy bar.",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "dictaCommand": "dicta"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "dictaCommand",
+        "type": "string",
+        "label": "Dicta command",
+        "defaultValue": "dicta"
+      }
+    ]
+  }
+}

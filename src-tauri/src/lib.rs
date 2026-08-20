@@ -76,8 +76,92 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+#[cfg(target_os = "linux")]
+fn requested_project_argument() -> Option<String> {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    let index = arguments
+        .iter()
+        .position(|argument| argument == "--show-project")?;
+    arguments.get(index + 1).cloned()
+}
+
+#[cfg(target_os = "linux")]
+fn requested_recording_argument() -> Option<RecordingSelection> {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    let index = arguments
+        .iter()
+        .position(|argument| argument == "--show-recording")?;
+    Some(RecordingSelection {
+        project_id: arguments.get(index + 1)?.clone(),
+        recording_id: arguments.get(index + 2)?.clone(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn show_project(app: &AppHandle, project_id: &str) {
+    if let Err(error) = select_project_from_tray(app, project_id) {
+        eprintln!("Could not select Dicta project `{project_id}`: {error}");
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn show_recording(app: &AppHandle, project_id: &str, recording_id: &str) {
+    let state = app.state::<AppState>();
+    let recording_exists = load_recordings(&state.root, project_id).is_ok_and(|recordings| {
+        recordings
+            .iter()
+            .any(|recording| recording.id.to_string() == recording_id)
+    });
+    if !recording_exists {
+        eprintln!("Could not open Dicta recording `{recording_id}` in project `{project_id}`");
+        return;
+    }
+    if let Err(error) = select_project_for_open(app, project_id) {
+        eprintln!("Could not select Dicta project `{project_id}`: {error}");
+        return;
+    }
+    let selection = RecordingSelection {
+        project_id: project_id.to_string(),
+        recording_id: recording_id.to_string(),
+    };
+    if let Ok(mut inner) = state.inner.lock() {
+        inner.pending_recording_selection = Some(selection.clone());
+    }
+    let _ = app.emit("recording-selected", selection);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn handle_control_command(app: &AppHandle, command: &str) {
+    if command == "toggle-recording" {
+        toggle_from_shortcut(app);
+    } else if command == "show" {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    } else if let Some(arguments) = command.strip_prefix("show-recording\t") {
+        if let Some((project_id, recording_id)) = arguments.split_once('\t') {
+            show_recording(app, project_id, recording_id);
+        }
+    } else if let Some(project_id) = command.strip_prefix("show-project\t") {
+        show_project(app, project_id);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    let requested_project_id = requested_project_argument();
+    #[cfg(target_os = "linux")]
+    let requested_recording = requested_recording_argument();
     let documents = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
     let legacy_root = documents.join("PromptReel");
     let preferred_root = documents.join("Dicta");
@@ -116,6 +200,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            take_pending_recording_selection,
             mcp_status,
             set_general_path,
             configure_codex_mcp,
@@ -155,8 +240,14 @@ pub fn run() {
             let _ = install_mcp_binary(app.handle());
             ensure_default_project_selection(app.handle());
             #[cfg(target_os = "linux")]
+            if let Some(selection) = requested_recording.as_ref() {
+                show_recording(app.handle(), &selection.project_id, &selection.recording_id);
+            } else if let Some(project_id) = requested_project_id.as_deref() {
+                show_project(app.handle(), project_id);
+            }
+            #[cfg(target_os = "linux")]
             if let Err(error) =
-                platform::linux::control::start(app.handle().clone(), toggle_from_shortcut)
+                platform::linux::control::start(app.handle().clone(), handle_control_command)
             {
                 eprintln!("{error}");
             }
@@ -285,6 +376,7 @@ mod tests {
             },
             session: recording,
             last_note: String::new(),
+            pending_recording_selection: None,
         }
     }
 

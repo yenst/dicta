@@ -75,8 +75,15 @@ install -Dm644 src-tauri/icons/32x32.png "$stage_root/usr/share/icons/hicolor/32
 install -Dm644 src-tauri/icons/128x128.png "$stage_root/usr/share/icons/hicolor/128x128/apps/dicta.png"
 install -Dm644 src-tauri/icons/128x128@2x.png "$stage_root/usr/share/icons/hicolor/256x256/apps/dicta.png"
 install -Dm644 src-tauri/icons/icon.png "$stage_root/usr/share/icons/hicolor/512x512/apps/dicta.png"
+install -Dm755 integrations/omarchy/install.sh "$stage_root/usr/bin/dicta-install-omarchy-plugin"
+install -Dm644 integrations/omarchy/dicta-context/manifest.json "$stage_root/usr/share/Dicta/omarchy/dicta.context/manifest.json"
+install -Dm644 integrations/omarchy/dicta-context/Panel.qml "$stage_root/usr/share/Dicta/omarchy/dicta.context/Panel.qml"
+install -Dm644 integrations/omarchy/dicta-context/Service.qml "$stage_root/usr/share/Dicta/omarchy/dicta.context/Service.qml"
+install -Dm644 integrations/omarchy/dicta-context/README.md "$stage_root/usr/share/Dicta/omarchy/dicta.context/README.md"
+install -Dm644 integrations/omarchy/dicta-context/assets/dicta-mark-light.png "$stage_root/usr/share/Dicta/omarchy/dicta.context/assets/dicta-mark-light.png"
 
 test -x "$stage_root/usr/bin/dicta"
+test -x "$stage_root/usr/bin/dicta-install-omarchy-plugin"
 test -x "$stage_root/usr/lib/Dicta/dicta-mcp"
 test -s "$stage_root/usr/lib/Dicta/ggml-base-q5_1.bin"
 
@@ -99,10 +106,13 @@ archive_listing="$stage_workspace/archive.list"
 tar -tzf "$archive_tmp" >"$archive_listing"
 for required_path in \
   Dicta/usr/bin/dicta \
+  Dicta/usr/bin/dicta-install-omarchy-plugin \
   Dicta/usr/lib/Dicta/dicta-mcp \
   Dicta/usr/lib/Dicta/ggml-base-q5_1.bin \
   Dicta/usr/share/applications/dicta.desktop \
-  Dicta/usr/share/icons/hicolor/512x512/apps/dicta.png; do
+  Dicta/usr/share/icons/hicolor/512x512/apps/dicta.png \
+  Dicta/usr/share/Dicta/omarchy/dicta.context/manifest.json \
+  Dicta/usr/share/Dicta/omarchy/dicta.context/Panel.qml; do
   if ! grep -Fxq "$required_path" "$archive_listing"; then
     echo "Linux archive is missing $required_path" >&2
     exit 1
@@ -113,6 +123,7 @@ verification_root="$stage_workspace/verify"
 mkdir "$verification_root"
 tar -xzf "$archive_tmp" -C "$verification_root"
 test -x "$verification_root/Dicta/usr/bin/dicta"
+test -x "$verification_root/Dicta/usr/bin/dicta-install-omarchy-plugin"
 test -x "$verification_root/Dicta/usr/lib/Dicta/dicta-mcp"
 test -s "$verification_root/Dicta/usr/lib/Dicta/ggml-base-q5_1.bin"
 if [[ "$target_triple" == "$host_triple" ]]; then

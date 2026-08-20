@@ -1,0 +1,16 @@
+[package]
+name = "dicta-overlay"
+version = "0.1.0"
+description = "Recording-relative annotation sessions for Dicta"
+edition = "2021"
+
+[dependencies]
+dicta-core = { path = "../dicta-core" }
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

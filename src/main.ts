@@ -79,6 +79,12 @@ interface UiState {
   projectPickerOpen: boolean;
   recordingSearchOpen: boolean;
   recordingQuery: string;
+  recordingDrawerOpen: boolean;
+}
+
+interface RecordingSelection {
+  project_id: string;
+  recording_id: string;
 }
 
 const ui: UiState = {
@@ -87,6 +93,7 @@ const ui: UiState = {
   projectPickerOpen: false,
   recordingSearchOpen: false,
   recordingQuery: "",
+  recordingDrawerOpen: false,
 };
 let appSettings: AppSettings = { shortcut_id: platform.defaultShortcutId, cleanup_merged_videos: true, branch_locking: true, transcription_language: "auto", general_path: null };
 let cleanupRunning = false;
@@ -338,6 +345,7 @@ function render(): void {
     noteDraft: viewerNoteDraft,
     listening: viewerListening,
     voiceProcessing: viewerVoiceProcessing,
+    recordingDrawerOpen: ui.recordingDrawerOpen,
   });
   const recordingsHtml = renderRecordings({
     selectedProjectId: projectController.selectedProjectId,
@@ -350,6 +358,7 @@ function render(): void {
     status,
     shortcutLabel: shortcutLabel(),
     viewerHtml,
+    recordingDrawerOpen: ui.recordingDrawerOpen,
   });
 
   const settingsHtml = renderSettings({
@@ -493,8 +502,40 @@ function openPacket(recordingId: string): void {
   viewerNoteSource = "typed";
   viewerPanel = "transcript";
   openPacketMenu = null;
+  ui.recordingDrawerOpen = false;
   render();
   window.requestAnimationFrame(() => document.querySelector<HTMLElement>("#packet-viewer")?.focus({ preventScroll: true }));
+}
+
+async function openExternalRecording(selection: RecordingSelection): Promise<boolean> {
+  if (projectController.selectedProjectId !== selection.project_id) {
+    await browseProject(selection.project_id);
+  } else if (!projectController.recordings.some((recording) => recording.id === selection.recording_id)) {
+    await refreshRecordings(selection.project_id);
+  }
+  if (projectController.selectedProjectId !== selection.project_id) return false;
+  if (!projectController.recordings.some((recording) => recording.id === selection.recording_id)) {
+    showToast("Recording is no longer available");
+    return false;
+  }
+  openPacket(selection.recording_id);
+  return true;
+}
+
+let pendingRecordingOpen: Promise<boolean> | null = null;
+
+async function consumePendingRecordingSelection(): Promise<boolean> {
+  if (pendingRecordingOpen) return pendingRecordingOpen;
+  const operation = (async () => {
+    const selection = await invoke<RecordingSelection | null>("take_pending_recording_selection");
+    return selection ? openExternalRecording(selection) : false;
+  })();
+  pendingRecordingOpen = operation;
+  try {
+    return await operation;
+  } finally {
+    if (pendingRecordingOpen === operation) pendingRecordingOpen = null;
+  }
 }
 
 function setMarkedTime(time: number, focusComposer = true): void {
@@ -678,6 +719,7 @@ async function browseProject(projectId: string): Promise<void> {
   ui.activeView = "project";
   projectController.select(projectId);
   ui.projectPickerOpen = false;
+  ui.recordingDrawerOpen = false;
   const captureBusy = ["preparing", "recording", "stopping"].includes(status.phase);
   if (!status.active_project_id || !captureBusy) {
     status.active_project_id = projectId;
@@ -694,16 +736,35 @@ async function browseProject(projectId: string): Promise<void> {
 function bindEvents(): void {
   document.querySelector("#toggle-recording-search")?.addEventListener("click", () => {
     ui.recordingSearchOpen = !ui.recordingSearchOpen;
+    if (ui.recordingSearchOpen) ui.recordingDrawerOpen = true;
     if (!ui.recordingSearchOpen) ui.recordingQuery = "";
     render();
     if (ui.recordingSearchOpen) window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>("#recording-search")?.focus());
   });
   document.querySelector("#focus-recording-search")?.addEventListener("click", () => {
     ui.recordingSearchOpen = true;
+    ui.recordingDrawerOpen = true;
     render();
     window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>("#recording-search")?.focus());
   });
   document.querySelector("#project-switcher")?.addEventListener("click", () => { ui.projectPickerOpen = !ui.projectPickerOpen; render(); });
+  document.querySelector("#toggle-recording-drawer")?.addEventListener("click", () => {
+    ui.recordingDrawerOpen = !ui.recordingDrawerOpen;
+    render();
+    if (ui.recordingDrawerOpen) window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".recording-index")?.focus({ preventScroll: true }));
+  });
+  const closeRecordingDrawer = () => {
+    ui.recordingDrawerOpen = false;
+    ui.recordingSearchOpen = false;
+    ui.recordingQuery = "";
+    render();
+    window.requestAnimationFrame(() => document.querySelector<HTMLElement>("#toggle-recording-drawer")?.focus({ preventScroll: true }));
+  };
+  document.querySelector("#close-recording-drawer")?.addEventListener("click", closeRecordingDrawer);
+  document.querySelector("#recording-drawer-close")?.addEventListener("click", closeRecordingDrawer);
+  document.querySelector<HTMLElement>(".recording-index")?.addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Escape") closeRecordingDrawer();
+  });
   document.querySelector("#remove-project-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!removeProjectId) return;
@@ -732,6 +793,13 @@ function bindEvents(): void {
     await linkProjectFolder();
   });
   document.querySelector("#open-settings")?.addEventListener("click", () => {
+    ui.activeView = ui.activeView === "settings" ? "project" : "settings";
+    if (ui.activeView === "settings") ui.settingsSection = "appearance";
+    openPacketMenu = null;
+    openProjectMenu = null;
+    render();
+  });
+  document.querySelector("#compact-settings")?.addEventListener("click", () => {
     ui.activeView = ui.activeView === "settings" ? "project" : "settings";
     if (ui.activeView === "settings") ui.settingsSection = "appearance";
     openPacketMenu = null;
@@ -1207,11 +1275,15 @@ async function initialize(): Promise<void> {
       await refreshRecordings(payload);
       if (projectController.selectedProjectId === payload) render();
     }));
+    appLifecycle.add(await listen<RecordingSelection>("recording-selected", () => {
+      void consumePendingRecordingSelection();
+    }));
     appLifecycle.add(await listen<ModelDownloadEvent>("model-download-progress", ({ payload }) => {
       modelDownload = payload;
       modelDownloading = payload.status === "downloading" || payload.status === "verifying";
       render();
     }));
+    await consumePendingRecordingSelection();
   }
   render();
 }
@@ -1387,7 +1459,12 @@ appLifecycle.add(mountDelegatedEvents(app, [
 
 initialize().catch((error) => { app.innerHTML = `<div class="fatal"><strong>Dicta could not start.</strong><pre>${escapeHtml(String(error))}</pre></div>`; });
 
-appLifecycle.listen(window, "focus", () => { void refreshActiveProject(); });
+appLifecycle.listen(window, "focus", () => {
+  void (async () => {
+    if (dictaClient.isNative && await consumePendingRecordingSelection()) return;
+    await refreshActiveProject();
+  })();
+});
 const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
 appLifecycle.listen(systemThemeQuery, "change", () => {
   if (themePreference === "system") {

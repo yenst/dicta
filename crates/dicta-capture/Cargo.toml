@@ -1,0 +1,18 @@
+[package]
+name = "dicta-capture"
+version = "0.1.0"
+edition = "2021"
+description = "Lean Omarchy/Hyprland Wayland capture backend for Dicta"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+

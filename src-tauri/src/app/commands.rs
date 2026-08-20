@@ -16,6 +16,17 @@ pub(crate) fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String>
 }
 
 #[tauri::command]
+pub(crate) fn take_pending_recording_selection(
+    state: State<'_, AppState>,
+) -> Result<Option<RecordingSelection>, String> {
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "Recorder state is unavailable".to_string())?;
+    Ok(inner.pending_recording_selection.take())
+}
+
+#[tauri::command]
 pub(crate) fn create_project(
     app: AppHandle,
     name: String,

@@ -14,6 +14,7 @@ export interface ViewerViewModel {
   noteDraft: string;
   listening: boolean;
   voiceProcessing: boolean;
+  recordingDrawerOpen: boolean;
 }
 
 export function renderViewer(vm: ViewerViewModel): string {
@@ -23,7 +24,7 @@ export function renderViewer(vm: ViewerViewModel): string {
   const segments = recording.transcript_segments ?? [];
   return `<article class="inline-review" id="packet-viewer" tabindex="-1" aria-label="Recording review">
     <header class="inline-review-header">
-      <div class="inline-review-title"><div><h2>${escapeHtml(recordingTitle(recording))}</h2>${recordingSubtitle(recording) ? `<p>${escapeHtml(recordingSubtitle(recording))}</p>` : ""}</div><div class="inline-action-wrap"><button class="inline-more" data-menu="${escapeHtml(recording.id)}" data-menu-surface="detail" aria-label="Recording actions"><i class="ph ph-dots-three"></i></button>${vm.actionsMenu}</div></div>
+      <div class="inline-review-title"><button class="compact-recordings-button" id="toggle-recording-drawer" type="button" aria-label="Browse recordings" aria-expanded="${vm.recordingDrawerOpen}"><i class="ph ph-list-bullets"></i><span>Recordings</span></button><div><h2>${escapeHtml(recordingTitle(recording))}</h2>${recordingSubtitle(recording) ? `<p>${escapeHtml(recordingSubtitle(recording))}</p>` : ""}</div><div class="inline-action-wrap"><button class="inline-more" data-menu="${escapeHtml(recording.id)}" data-menu-surface="detail" aria-label="Recording actions"><i class="ph ph-dots-three"></i></button>${vm.actionsMenu}</div></div>
       <div class="inline-review-meta"><span>${new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(new Date(recording.started_at))} · ${new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(recording.started_at))}</span><button class="review-context" type="button" data-copy-recording-context="${escapeHtml(recording.id)}" aria-label="Copy recording context" title="Copy context"><i class="ph ph-copy"></i></button></div>
     </header>
     <div class="inline-review-scroll">

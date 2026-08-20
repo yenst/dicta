@@ -1,128 +1,179 @@
 # Dicta
 
-Dicta is a macOS and Linux desktop app for recording screen + voice explanations into project folders that can be handed to coding agents as prompt context. Narration is transcribed automatically: macOS tries Speech Recognition first, while Linux uses the bundled local Whisper engine directly. Both use the default language from **Settings → Transcription** (Auto-detect unless you pick one). A compact model ships inside the app, while the same settings page can download and verify the much better multilingual `large-v3-turbo-q5_0` model. Pending (not failed) transcriptions are retried when Dicta opens.
+Dicta is a native Linux screen recorder for turning a narrated desktop session
+into durable context for coding agents. It records the screen, desktop audio,
+microphone, live annotations, a short intent note, local Whisper transcription,
+and timestamped review notes into one project-scoped packet.
 
-## MVP workflow
+The current product path is Rust first: a small Qt Quick host owns the native
+window and GPU annotation surface, while Rust owns the state machine, capture,
+storage, transcription, Unix control socket, CLI, and MCP server. It does not
+use a WebView, Node.js runtime, Tauri process, or async executor.
 
-1. Choose a linked Git project when recording, or use **General** for a recording outside any repository. The tray's **Projects** submenu switches the active destination on both macOS and Linux.
-2. Add a short note describing what the model should learn.
-3. Use **Settings → Shortcuts** to choose a global shortcut, then press it to start or stop recording without bringing Dicta forward. The tray title shows ● while recording. The in-app Record button still opens the note sheet.
-4. Press Record in the sheet, or press the shortcut again to stop. Recordings cap at 20 minutes.
-5. Open a packet to play the video and read the transcript. Use **Context** to copy a Markdown index of notes and artifact paths.
+## Workflow
 
-The recording sheet includes a **Lock to Git branch** switch. When it is on, Dicta reads the working copy's current branch when recording starts and stores the packet in that branch. When it is off, the packet is repository-wide and remains visible from every branch. You can browse other projects in the sidebar or top project selector while a recording continues; the capture keeps its original destination.
+1. Select **General**, create a standalone project, or link a Git repository.
+2. Describe what the recording should explain and press **Record**.
+3. Draw with pen, arrow, rectangle, or spotlight while recording. Escape or
+   right-click returns the overlay to pointer pass-through mode.
+4. Stop from the app, Omarchy bar, global shortcut, or `dicta record stop`.
+5. Play the video, inspect its poster and transcript, add notes at the playback
+   cursor, or copy the complete context packet for an agent.
 
-Linked-project recordings live inside the authorized Git workspace so Codex and other agents can read them without requesting access to an unrelated app-data folder:
-
-```text
-<repo>/.dicta/branches/<branch>/recordings/<date>/
-<repo>/.dicta/recordings/<date>/                  # repository-wide
-~/Documents/Dicta/unprojected/recordings/<date>/ # no project
-```
-
-Dicta adds `.dicta/` to the repository's local `.git/info/exclude`, so videos never appear in Git status or get committed. Each recording is an `.mp4` plus a `.json` sidecar and a stable timestamp-based ID. Branch names keep their exact value in metadata; `/` is encoded as `__` only in folder names (`feature/oauth` becomes `feature__oauth`).
-
-Merged-video cleanup is available in **Settings → Storage**. Press **Clean** to use Git ancestry to confirm that a recorded branch tip is contained in the repository's default branch, then remove only that branch's `.mp4` files. Transcripts, notes, and metadata remain available to MCP. The active and default branches are never cleaned. Cleanup never runs just because the window regained focus.
-
-When a project is linked after upgrading, Dicta safely copies any existing packets from `~/Documents/Dicta/<project>` into `<repo>/.dicta` and rewrites their evidence paths. The original library is left intact.
-
-## Run locally
-
-Requirements on every platform: Rust, Node.js, and the native Tauri 2 build dependencies.
-
-- macOS: macOS 15+ and Xcode Command Line Tools.
-- Linux: FFmpeg, PulseAudio/PipeWire-Pulse, and a supported capture backend. KDE Plasma Wayland uses Spectacle, wlroots Wayland uses `wf-recorder`, and X11 uses FFmpeg's `x11grab`. Clipboard actions additionally need `wl-clipboard`, `xclip`, or `xsel`. In-app playback needs GStreamer's libav plugin (`gst-libav`).
-
-On Arch/CachyOS, install the common runtime and build packages with:
-
-```bash
-sudo pacman -S --needed base-devel cmake clang curl ffmpeg gst-libav gst-plugins-good nodejs npm rust shaderc vulkan-headers vulkan-icd-loader webkit2gtk-4.1 libayatana-appindicator librsvg wl-clipboard xorg-xrandr
-```
-
-For wlroots compositors such as Sway or Hyprland, also install `wf-recorder`. On KDE Wayland, Plasma asks you to click a window on the screen you want to record after starting; Dicta then records that entire screen. On X11, `xrandr` is used to detect the desktop size. Linux capture can be forced with `DICTA_SCREEN_RECORDER=spectacle`, `wf-recorder`, or `ffmpeg-x11` when auto-detection is not appropriate.
-
-Linux transcription uses Whisper's Vulkan backend when a compatible GPU and Vulkan driver are available, with the CPU backend retained as a fallback. `shaderc` and `vulkan-headers` are build-time requirements; packaged Dicta binaries only need the Vulkan loader and a working vendor driver.
-
-On NVIDIA Wayland sessions, Dicta automatically disables WebKitGTK's DMA-BUF renderer to avoid a startup protocol error. Set `DICTA_ENABLE_WEBKIT_DMABUF=1` before launch only if you deliberately want to test the native renderer again.
-
-```bash
-npm ci
-npm run tauri dev
-```
-
-Before opening a change, run the same quality gate used by CI:
-
-```bash
-npm run verify
-```
-
-The gate checks release-version consistency, TypeScript, Rust formatting and Clippy, web and Rust tests, the production web build, and the MCP stdio protocol smoke test. The narrower `npm run lint`, `npm test`, `npm run check:versions`, and `npm run smoke:mcp` commands are available while iterating. Node.js and Rust are pinned in `.nvmrc` and `rust-toolchain.toml`; use those versions when reproducing CI failures locally.
-
-## Build release artifacts
-
-Build the native Linux archive on the Linux machine and architecture you intend to support:
-
-```bash
-npm run bundle:linux
-```
-
-The script performs locked Rust builds, stages into a fresh directory, smoke-tests the bundled MCP executable, and verifies the archive manifest. The version and architecture in `Dicta_<version>_linux_<architecture>.tar.gz` are derived from the project and Rust target rather than being hard-coded. Archive ordering, ownership, and timestamps are normalized; set `SOURCE_DATE_EPOCH` to a fixed Unix timestamp when reproducing a release outside Git.
-
-The archive uses the build host's GTK/WebKit stack and includes Dicta, its MCP helper, the compact Whisper model, desktop metadata, and application icons. This is the recommended package on rolling-release distributions such as Arch and CachyOS, where linuxdeploy's bundled WebKit or binutils can be incompatible with current system libraries. Build each supported architecture on a matching host or explicitly configured Rust Linux target; the script refuses non-Linux targets.
-
-On macOS 15 or newer, create an unsigned local `.app` and `.dmg` with:
-
-```bash
-npm run tauri -- build --no-sign
-```
-
-The repository does not contain a developer signing identity. Release CI should import its certificate through Tauri's `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` environment variables; Tauri infers the signing identity from that certificate. For notarization, provide `APPLE_API_KEY`, `APPLE_API_ISSUER`, and `APPLE_API_KEY_PATH`, then run:
-
-```bash
-npm run tauri -- build --ci
-```
-
-Keep certificates, passwords, API keys, and signing identities in the release environment rather than project files. macOS native compilation, signing, notarization, and stapling must be verified on a macOS runner; Linux cannot validate those steps.
-
-## MCP access
-
-Dicta bundles a standalone, read-only MCP server and installs it to:
+Git-linked recordings can be repository-wide or locked to the active branch.
+Dicta adds `.dicta/` to the repository's local `.git/info/exclude`; recordings
+never need to enter Git history. Merged-branch cleanup proves Git ancestry and
+deletes only video files from non-active branches whose recorded revision is
+contained in the default branch. Metadata, transcript, and notes remain.
 
 ```text
-macOS: ~/Library/Application Support/Dicta/bin/dicta-mcp
-Linux: ~/.local/share/Dicta/bin/dicta-mcp
+<repo>/.dicta/recordings/<date>/
+<repo>/.dicta/branches/<encoded-branch>/recordings/<date>/
+<dicta-root>/General/recordings/<date>/
 ```
 
-Select **Connect Codex** in Dicta to register it with Codex. Then link the Git project once so its repository-local `.dicta` index is created. If a loaded Codex task reports `Transport closed`, use **Restart Codex MCP** in Dicta; it reinstalls the server atomically and forces Codex to refresh its MCP transports. You can also configure any stdio-compatible agent manually with that executable path.
+Each packet uses the shared versioned Rust model and normally contains an MP4,
+JSON metadata, JPEG poster, optional annotation sidecar, and transcript.
 
-The server exposes:
+## Native Linux requirements
 
-- `get_project_guidance` — resolve a repository and current branch, then return the most relevant branch-specific and repository-wide guidance.
-- `list_recordings` — browse a branch's recordings newest-first.
-- `get_recording` — read one recording's note, metadata, transcript when available, and evidence paths.
-- `get_recording_frames` — extract up to eight timestamped JPEG screenshots from a recording and return them inline. Pass exact timestamps or let Dicta sample useful moments across the video.
+Dicta targets Omarchy/Hyprland first. Building requires Rust, CMake, a C++20
+compiler, and Qt 6.5+ development packages for Core, Gui, Qml, Quick, and
+optionally Multimedia.
 
-Example prompt:
+The installed runtime uses:
 
-```text
-Check Dicta for this project and current branch for prior guidance, then implement this ticket.
+- `gpu-screen-recorder` for the primary GPU capture path;
+- `wf-recorder` as the wlroots fallback;
+- PipeWire/PulseAudio-compatible sources for desktop and microphone audio;
+- FFmpeg for audio normalization, poster frames, and MCP screenshots;
+- Voxtype plus the packaged compact Whisper model for local transcription;
+- `wl-copy` only when an explicit CLI copy action is requested.
+
+Missing transcription or playback tooling is reported without disabling the
+recording library.
+
+## Build and test
+
+```sh
+cmake -S apps/dicta-native -B apps/dicta-native/build \
+  -DCMAKE_BUILD_TYPE=Release -DDICTA_BUILD_TESTS=ON
+cmake --build apps/dicta-native/build --parallel
+cargo build --locked -p dicta-cli
 ```
 
-Dicta tools never modify recordings or repositories.
+Run the native host directly:
 
-Frame extraction uses the original local MP4 with macOS AVFoundation or Linux FFmpeg. Each request owns a private temporary frame directory that is deleted after the response is assembled; no deleted local image path is exposed in response metadata. When word-level timing is unavailable, any nearby transcript excerpt is explicitly marked as approximate position-based context; the screenshot timestamp itself is exact.
+```sh
+apps/dicta-native/build/dicta-native
+```
 
-The first recording may ask for Microphone and Screen Recording permission. macOS may require the app to be restarted after Screen Recording permission is granted; Wayland displays a desktop capture permission prompt through its native recorder.
+Or let the CLI start and raise the single host process:
 
-## Current scope
+```sh
+DICTA_NATIVE_BIN="$PWD/apps/dicta-native/build/dicta-native" \
+  target/debug/dicta ui
+```
 
-- Main display only
-- Four configurable global recording shortcuts
-- MP4 + metadata prompt packets
-- Manual Git-verified video cleanup for merged branches
-- Downloadable high-quality local transcription model with progress and SHA-1 integrity verification
-- Default transcription language in Settings, used for Speech Recognition and local Whisper
-- In-app video playback, transcript view, and poster frames
-- MCP `get_recording_frames` for up to eight timestamped screenshots
+The release gate is documented in
+[`docs/native-feature-parity.md`](docs/native-feature-parity.md). The core local
+checks are:
 
-Double-tapping bare `Fn` needs a lower-level macOS event tap plus Accessibility/Input Monitoring permission. Dicta offers Command/Option/Control combinations on macOS. Linux defaults to `Alt+Shift+R`, with additional Super/Alt/Control combinations in Settings.
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+ctest --test-dir apps/dicta-native/build --output-on-failure
+cmake --build apps/dicta-native/build --target dicta-native_qmllint
+node scripts/check-versions.mjs
+```
+
+Unix-socket and live Hyprland tests need an environment that permits private
+`AF_UNIX` sockets and access to the active compositor.
+
+## CLI
+
+The `dicta` CLI speaks the typed local protocol over a private per-user Unix
+socket. Read operations can fall back to the persisted catalog when the app is
+not running.
+
+```sh
+dicta ui
+dicta status
+dicta record start --note "Explain the overlay focus bug"
+dicta annotate enable
+dicta annotate tool arrow
+dicta record stop
+dicta project list
+dicta recording list --project dicta
+dicta recording open <recording-id>
+dicta context <recording-id> --project dicta --copy
+dicta model status
+dicta model install quality
+dicta settings get
+dicta doctor
+```
+
+Use `dicta --help` for the complete grammar and `--json` for stable automation
+output.
+
+## Omarchy integration
+
+The native UI follows Omarchy rather than maintaining a competing theme. It
+reads the active palette, shell scale, and monospace font and reloads them while
+the app is running.
+
+The native archive includes two optional integrations:
+
+```sh
+dicta-install-omarchy-plugin
+dicta-install-omarchy-shortcut
+```
+
+The first installs the project/context/recording bar plugin. The second adds one
+isolated `~/.config/hypr/dicta-bindings.lua` module, validates `hyprctl reload`,
+and tracks the shortcut preset selected in Dicta settings. It is reversible:
+
+```sh
+dicta-install-omarchy-shortcut --remove
+```
+
+The installer backs up the touched binding file and never modifies Omarchy's
+system-owned source tree.
+
+## MCP
+
+`dicta-mcp` is a standalone read-only stdio server. It does not require the app
+or control socket to be running. The native archive installs it at
+`/usr/lib/Dicta/dicta-mcp` and exposes:
+
+- `list_projects`
+- `get_current_project`
+- `get_project_guidance`
+- `list_recordings`
+- `get_recording`
+- `get_recording_context`
+- `get_recording_frames`
+
+Frame requests return up to eight real inline JPEGs extracted from a confined,
+non-symlinked recording. No deleted temporary path is exposed.
+
+## Package
+
+Build the system-Qt native archive on the target Linux architecture:
+
+```sh
+npm run bundle:native-linux
+```
+
+The reproducible archive contains the Qt/Rust host, CLI, MCP server, compact
+model, desktop entry, icons, Omarchy integration, and documentation. It rejects
+WebKit, JavaScriptCore, Node, and bundled shared libraries during packaging.
+
+## Migration status
+
+The former Tauri/macOS sources remain in the repository only while the native
+feature-parity ledger is being closed and old data contracts are exercised by
+migration tests. They are not the recommended build or release path. Those
+sources will be removed only after every native row has its required live and
+automated evidence.

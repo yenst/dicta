@@ -1,0 +1,8 @@
+[package]
+name = "dicta-transcribe"
+version = "0.1.0"
+description = "UI-independent local transcription worker for Dicta"
+edition = "2021"
+
+[dependencies]
+dicta-core = { path = "../dicta-core" }

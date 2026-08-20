@@ -1,5 +1,6 @@
 mod frames;
 mod guidance;
+mod projects;
 mod recording;
 
 use serde::de::DeserializeOwned;
@@ -29,8 +30,13 @@ impl ToolResult {
 pub(crate) fn call(name: &str, arguments: Value) -> Result<ToolResult, String> {
     match name {
         "get_project_guidance" => guidance::get(parse(name, arguments)?).map(ToolResult::text),
+        "list_projects" => projects::list(parse(name, arguments)?).map(ToolResult::text),
+        "get_current_project" => projects::current(parse(name, arguments)?).map(ToolResult::text),
         "list_recordings" => guidance::list(parse(name, arguments)?).map(ToolResult::text),
         "get_recording" => recording::get(parse(name, arguments)?).map(ToolResult::text),
+        "get_recording_context" => {
+            recording::context(parse(name, arguments)?).map(ToolResult::text)
+        }
         "get_recording_frames" => frames::get(parse(name, arguments)?),
         _ => Err(format!("Unknown Dicta tool: {name}")),
     }
@@ -55,6 +61,30 @@ pub(crate) fn checked_limit(
 
 pub(crate) fn definitions() -> Value {
     json!([
+        {
+            "name": "list_projects",
+            "description": "List Dicta projects from the local filesystem catalog and identify the project for a Git working copy when determinable.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "title": "List Dicta projects", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "get_current_project",
+            "description": "Resolve the Dicta project linked to a Git working copy without contacting the Dicta application or daemon.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Get the current Dicta project", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
         {
             "name": "get_project_guidance",
             "description": "Get the most relevant Dicta guidance for a Git project. Repository-wide recordings and recordings for the selected branch are included.",
@@ -98,6 +128,21 @@ pub(crate) fn definitions() -> Value {
                 "additionalProperties": false
             },
             "annotations": { "title": "Read a Dicta recording", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "get_recording_context",
+            "description": "Build the concise context instruction for one Dicta recording, including its project and branch or repository scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "branch": { "type": "string" },
+                    "recording_id": { "type": "string" }
+                },
+                "required": ["recording_id"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Build Dicta recording context", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         },
         {
             "name": "get_recording_frames",

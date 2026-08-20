@@ -1,0 +1,16 @@
+[package]
+name = "dicta-engine"
+version = "0.8.0"
+description = "UI-independent application controller and recording state machine for Dicta"
+edition = "2021"
+
+[dependencies]
+dicta-core = { path = "../dicta-core" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+

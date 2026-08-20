@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Capabilities for the Dicta window",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open"
+  ]
 }

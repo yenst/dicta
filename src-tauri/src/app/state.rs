@@ -139,6 +139,12 @@ pub(crate) struct RecorderEventPayload {
     pub(crate) status: RecorderStatus,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RecordingSelection {
+    pub(crate) project_id: String,
+    pub(crate) recording_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct NativeTranscriptionPayload {
     pub(crate) path: String,
@@ -159,6 +165,7 @@ pub(crate) struct InnerState {
     pub(crate) status: RecorderStatus,
     pub(crate) session: Option<Recording>,
     pub(crate) last_note: String,
+    pub(crate) pending_recording_selection: Option<RecordingSelection>,
 }
 
 pub(crate) struct AppState {
@@ -180,6 +187,7 @@ impl AppState {
                 },
                 session: None,
                 last_note: String::new(),
+                pending_recording_selection: None,
             }),
         }
     }

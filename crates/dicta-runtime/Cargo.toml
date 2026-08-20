@@ -1,0 +1,23 @@
+[package]
+name = "dicta-runtime"
+version = "0.1.0"
+description = "UI-independent runtime adapter for Dicta"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+dicta-capture = { path = "../dicta-capture" }
+dicta-control = { path = "../dicta-control" }
+dicta-core = { path = "../dicta-core" }
+dicta-engine = { path = "../dicta-engine" }
+dicta-transcribe = { path = "../dicta-transcribe" }
+
+[dev-dependencies]
+chrono.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

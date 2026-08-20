@@ -21,7 +21,10 @@ pub(super) fn get(args: FramesArgs) -> Result<super::ToolResult, String> {
     }
     let context = context::resolve(args.repo_path.as_deref(), args.branch.as_deref())?;
     let recording = context::find(&context, args.recording_id.trim())?.recording;
-    if !Path::new(&recording.video_path).is_file() {
+    let video_path = Path::new(&recording.video_path);
+    let video_is_regular = fs::symlink_metadata(video_path)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
+    if !video_is_regular {
         return Err(format!(
             "The recording video is missing at `{}`",
             recording.video_path
@@ -48,11 +51,7 @@ pub(super) fn get(args: FramesArgs) -> Result<super::ToolResult, String> {
         let output_path = output_dir
             .path()
             .join(format!("{safe_id}-{millis:010}.jpg"));
-        let actual_seconds = platform::extract_frame(
-            Path::new(&recording.video_path),
-            requested_seconds,
-            &output_path,
-        )?;
+        let actual_seconds = platform::extract_frame(video_path, requested_seconds, &output_path)?;
         let image = fs::read(&output_path)
             .map_err(|error| format!("Could not read extracted frame: {error}"))?;
         let timestamp = format_timestamp(actual_seconds);

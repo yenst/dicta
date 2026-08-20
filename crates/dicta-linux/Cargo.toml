@@ -1,0 +1,23 @@
+[package]
+name = "dicta-linux"
+version = "0.1.0"
+description = "Concrete synchronous Linux ports for the Dicta native runtime"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+chrono = { workspace = true }
+dicta-capture = { path = "../dicta-capture" }
+dicta-control = { path = "../dicta-control" }
+dicta-core = { path = "../dicta-core" }
+dicta-engine = { path = "../dicta-engine" }
+dicta-runtime = { path = "../dicta-runtime" }
+dicta-transcribe = { path = "../dicta-transcribe" }
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -92,14 +92,17 @@ pub(crate) fn resolve(
             format!("No repository-local Dicta storage was found at `{}`. Open Dicta and link this Git project once. Legacy lookup also failed: {legacy_error}", local_storage.display())
         })?;
         let repository_path = storage_root.join(project.id.as_str());
+        let legacy_policy = ArtifactPolicy::LegacyProject {
+            root: repository_path.clone(),
+        };
         let (branch_path, mut branch_sources) = branch_recording_sources(
             &repository_path.join("branches"),
             &branch,
-            ArtifactPolicy::TrustedLegacyProject,
+            legacy_policy.clone(),
         );
         let mut sources = vec![RecordingSource {
             path: repository_path,
-            policy: ArtifactPolicy::TrustedLegacyProject,
+            policy: legacy_policy,
         }];
         sources.append(&mut branch_sources);
         (project, branch_path, sources)
@@ -176,7 +179,7 @@ pub(crate) fn find(context: &Context, recording_id: &str) -> Result<FoundRecordi
     ))
 }
 
-fn dicta_root() -> Result<PathBuf, String> {
+pub(crate) fn dicta_root() -> Result<PathBuf, String> {
     if let Ok(path) = env::var("DICTA_HOME") {
         return Ok(PathBuf::from(path));
     }
@@ -186,8 +189,11 @@ fn dicta_root() -> Result<PathBuf, String> {
 }
 
 fn general_sources(storage_root: &Path) -> Vec<RecordingSource> {
-    let settings = fs::read_to_string(storage_root.join("settings.json"))
+    let settings_path = storage_root.join("settings.json");
+    let settings = fs::symlink_metadata(&settings_path)
         .ok()
+        .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .and_then(|_| fs::read_to_string(settings_path).ok())
         .and_then(|content| {
             serde_json::from_str::<dicta_core::storage::GeneralSettings>(&content).ok()
         })
@@ -197,7 +203,7 @@ fn general_sources(storage_root: &Path) -> Vec<RecordingSource> {
         .into_iter()
         .map(|path| {
             let policy = if path == legacy_unprojected {
-                ArtifactPolicy::TrustedLegacyUnprojected
+                ArtifactPolicy::LegacyUnprojected { root: path.clone() }
             } else {
                 ArtifactPolicy::ConfinedGeneral { root: path.clone() }
             };
@@ -223,14 +229,28 @@ fn find_general_recording(
 }
 
 fn find_project(storage_root: &Path, repo_root: &Path) -> Result<ProjectFile, String> {
+    reject_symlink(storage_root, "Dicta storage root")?;
     let entries = fs::read_dir(storage_root).map_err(|_| {
         format!(
             "Dicta storage was not found at `{}`. Open Dicta and link this Git project first.",
             storage_root.display()
         )
     })?;
-    for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
-        let Ok(content) = fs::read_to_string(entry.path().join("project.json")) else {
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let metadata_path = entry.path().join("project.json");
+        let Ok(metadata) = fs::symlink_metadata(&metadata_path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(metadata_path) else {
             continue;
         };
         let Ok(project) = serde_json::from_str::<ProjectFile>(&content) else {
@@ -239,8 +259,10 @@ fn find_project(storage_root: &Path, repo_root: &Path) -> Result<ProjectFile, St
         let Some(source) = project.source_path.as_ref() else {
             continue;
         };
-        let source_path = PathBuf::from(source);
-        if source_path.canonicalize().unwrap_or(source_path) == repo_root {
+        let Ok(source_path) = PathBuf::from(source).canonicalize() else {
+            continue;
+        };
+        if source_path == repo_root {
             return Ok(project);
         }
     }

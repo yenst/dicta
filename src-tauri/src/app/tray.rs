@@ -62,7 +62,7 @@ pub(crate) fn sync_tray_menu(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub(crate) fn select_project_from_tray(app: &AppHandle, project_id: &str) -> Result<(), String> {
+fn select_project(app: &AppHandle, project_id: &str, notify_frontend: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _ = read_project(&state.root, project_id)?;
     let mut inner = state
@@ -78,8 +78,18 @@ pub(crate) fn select_project_from_tray(app: &AppHandle, project_id: &str) -> Res
     inner.status.active_project_id = Some(project_id.to_string());
     drop(inner);
     let _ = sync_tray_menu(app);
-    let _ = app.emit("project-selected", project_id.to_string());
+    if notify_frontend {
+        let _ = app.emit("project-selected", project_id.to_string());
+    }
     Ok(())
+}
+
+pub(crate) fn select_project_from_tray(app: &AppHandle, project_id: &str) -> Result<(), String> {
+    select_project(app, project_id, true)
+}
+
+pub(crate) fn select_project_for_open(app: &AppHandle, project_id: &str) -> Result<(), String> {
+    select_project(app, project_id, false)
 }
 
 pub(crate) fn handle_tray_menu_event(app: &AppHandle, id: &str) {

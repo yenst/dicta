@@ -8,6 +8,12 @@ const cargoVersion = (path) => {
   if (!version) throw new Error(`Could not read package.version from ${path}`);
   return version;
 };
+const cmakeProjectVersion = (path) => {
+  const contents = fs.readFileSync(path, "utf8");
+  const version = contents.match(/\bproject\([^)]*\bVERSION\s+([^\s)]+)/i)?.[1];
+  if (!version) throw new Error(`Could not read project VERSION from ${path}`);
+  return version;
+};
 
 const packageJson = readJson("package.json");
 const packageLock = readJson("package-lock.json");
@@ -20,6 +26,13 @@ const versions = new Map([
   ["src-tauri/Cargo.toml", cargoVersion("src-tauri/Cargo.toml")],
   ["mcp/Cargo.toml", cargoVersion("mcp/Cargo.toml")],
   ["crates/dicta-core/Cargo.toml", cargoVersion("crates/dicta-core/Cargo.toml")],
+  ["apps/dicta-cli/Cargo.toml", cargoVersion("apps/dicta-cli/Cargo.toml")],
+  ["apps/dicta-native/rust/Cargo.toml", cargoVersion("apps/dicta-native/rust/Cargo.toml")],
+  ["apps/dicta-native/CMakeLists.txt", cmakeProjectVersion("apps/dicta-native/CMakeLists.txt")],
+  [
+    "integrations/omarchy/dicta-context/manifest.json",
+    readJson("integrations/omarchy/dicta-context/manifest.json").version,
+  ],
 ]);
 
 const mismatches = [...versions].filter(([, version]) => version !== expected);
