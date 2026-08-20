@@ -632,6 +632,7 @@ version = "0.8.0"
 dependencies = [
  "cc",
  "chrono",
+ "dicta-core",
  "dirs",
  "hound",
  "serde",
@@ -641,6 +642,15 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "whisper-rs",
+]
+
+[[package]]
+name = "dicta-core"
+version = "0.8.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

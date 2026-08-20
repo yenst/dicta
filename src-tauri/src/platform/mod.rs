@@ -1,12 +1,14 @@
 use std::os::raw::c_char;
 
+pub(crate) mod shell;
+
 pub(crate) type NativeCallback = extern "C" fn(*const c_char, *const c_char);
 
 #[cfg(target_os = "macos")]
 mod macos;
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub(crate) mod linux;
 
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{
@@ -15,8 +17,11 @@ pub(crate) use macos::{
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{
-    extract_audio, extract_poster, start_recording, stop_recording, transcribe,
+    abort_recording, extract_audio, extract_poster, start_recording, stop_recording, transcribe,
 };
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn abort_recording() {}
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn start_recording(_output_path: &str, _callback: NativeCallback) -> Result<(), String> {

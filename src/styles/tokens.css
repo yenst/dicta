@@ -1,0 +1,13 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  color: #1c1d20;
+  background: #f7f7f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --blue: #1769e8;
+  --blue-hover: #0c5fda;
+  --blue-soft: #eaf2ff;
+  --line: #e3e4e7;
+  --muted: #737780;
+  --red: #ef4940;
+}

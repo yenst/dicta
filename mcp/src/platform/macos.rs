@@ -32,7 +32,7 @@ pub(crate) fn extract_frame(
     } else {
         Err(format!(
             "Could not extract a screenshot at {} from `{}`",
-            crate::format_timestamp(seconds),
+            dicta_core::transcript::format_timestamp(seconds),
             video_path.display()
         ))
     }

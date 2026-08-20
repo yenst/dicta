@@ -21,12 +21,12 @@
         "resizable": true,
         "center": true,
         "fullscreen": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "decorations": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 asset: http://asset.localhost",
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost asset: http://asset.localhost",
+      "devCsp": "default-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": ["$HOME/**", "$DOCUMENT/**"]
@@ -35,7 +35,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -48,12 +47,6 @@
       "resources/ggml-base-q5_1.bin": "ggml-base-q5_1.bin"
     },
     "category": "DeveloperTool",
-    "shortDescription": "Record screen and voice as prompt context",
-    "macOS": {
-      "minimumSystemVersion": "15.0",
-      "signingIdentity": "Apple Development: jns.thiel@gmail.com (654YN3Y348)",
-      "entitlements": "entitlements.plist",
-      "infoPlist": "Info.plist"
-    }
+    "shortDescription": "Record screen and voice as prompt context"
   }
 }

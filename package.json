@@ -6,11 +6,19 @@
   "scripts": {
     "dev": "vite --port 1420",
     "build:web": "tsc && vite build",
-    "build:mcp": "cargo build --release --manifest-path mcp/Cargo.toml",
+    "build:mcp": "cargo build --release --locked --manifest-path mcp/Cargo.toml",
     "build": "npm run build:web && npm run build:mcp",
     "bundle:linux": "bash scripts/package-linux.sh",
     "tauri": "tauri",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "check:versions": "node scripts/check-versions.mjs",
+    "test:web": "vitest run",
+    "test:rust": "bash scripts/test-rust.sh",
+    "test": "npm run test:web && npm run test:rust",
+    "lint:rust": "bash scripts/lint-rust.sh",
+    "lint": "npm run check && npm run lint:rust",
+    "smoke:mcp": "cargo build --locked --manifest-path mcp/Cargo.toml && node scripts/smoke-mcp.mjs",
+    "verify": "npm run check:versions && npm run lint && npm run test && npm run build:web && npm run smoke:mcp"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",
@@ -19,7 +27,9 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "jsdom": "^26.1.0",
     "typescript": "^5.8.3",
-    "vite": "^7"
+    "vite": "^7",
+    "vitest": "^3.2.4"
   }
 }

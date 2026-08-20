@@ -46,17 +46,43 @@ Linux transcription uses Whisper's Vulkan backend when a compatible GPU and Vulk
 On NVIDIA Wayland sessions, Dicta automatically disables WebKitGTK's DMA-BUF renderer to avoid a startup protocol error. Set `DICTA_ENABLE_WEBKIT_DMABUF=1` before launch only if you deliberately want to test the native renderer again.
 
 ```bash
-npm install
+npm ci
 npm run tauri dev
 ```
 
-Build the native Linux archive with:
+Before opening a change, run the same quality gate used by CI:
+
+```bash
+npm run verify
+```
+
+The gate checks release-version consistency, TypeScript, Rust formatting and Clippy, web and Rust tests, the production web build, and the MCP stdio protocol smoke test. The narrower `npm run lint`, `npm test`, `npm run check:versions`, and `npm run smoke:mcp` commands are available while iterating. Node.js and Rust are pinned in `.nvmrc` and `rust-toolchain.toml`; use those versions when reproducing CI failures locally.
+
+## Build release artifacts
+
+Build the native Linux archive on the Linux machine and architecture you intend to support:
 
 ```bash
 npm run bundle:linux
 ```
 
-The archive uses the host GTK/WebKit stack and includes Dicta, its MCP helper, the compact Whisper model, desktop metadata, and application icons. This is the recommended package on rolling-release distributions such as Arch and CachyOS, where linuxdeploy's bundled WebKit or binutils can be incompatible with current system libraries.
+The script performs locked Rust builds, stages into a fresh directory, smoke-tests the bundled MCP executable, and verifies the archive manifest. The version and architecture in `Dicta_<version>_linux_<architecture>.tar.gz` are derived from the project and Rust target rather than being hard-coded. Archive ordering, ownership, and timestamps are normalized; set `SOURCE_DATE_EPOCH` to a fixed Unix timestamp when reproducing a release outside Git.
+
+The archive uses the build host's GTK/WebKit stack and includes Dicta, its MCP helper, the compact Whisper model, desktop metadata, and application icons. This is the recommended package on rolling-release distributions such as Arch and CachyOS, where linuxdeploy's bundled WebKit or binutils can be incompatible with current system libraries. Build each supported architecture on a matching host or explicitly configured Rust Linux target; the script refuses non-Linux targets.
+
+On macOS 15 or newer, create an unsigned local `.app` and `.dmg` with:
+
+```bash
+npm run tauri -- build --no-sign
+```
+
+The repository does not contain a developer signing identity. Release CI should import its certificate through Tauri's `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` environment variables; Tauri infers the signing identity from that certificate. For notarization, provide `APPLE_API_KEY`, `APPLE_API_ISSUER`, and `APPLE_API_KEY_PATH`, then run:
+
+```bash
+npm run tauri -- build --ci
+```
+
+Keep certificates, passwords, API keys, and signing identities in the release environment rather than project files. macOS native compilation, signing, notarization, and stapling must be verified on a macOS runner; Linux cannot validate those steps.
 
 ## MCP access
 
@@ -84,7 +110,7 @@ Check Dicta for this project and current branch for prior guidance, then impleme
 
 Dicta tools never modify recordings or repositories.
 
-Frame extraction uses the original local MP4 with macOS AVFoundation or Linux FFmpeg. Screenshots are written only to Dicta's temporary cache and returned as MCP image content. When word-level timing is unavailable, any nearby transcript excerpt is explicitly marked as approximate position-based context; the screenshot timestamp itself is exact.
+Frame extraction uses the original local MP4 with macOS AVFoundation or Linux FFmpeg. Each request owns a private temporary frame directory that is deleted after the response is assembled; no deleted local image path is exposed in response metadata. When word-level timing is unavailable, any nearby transcript excerpt is explicitly marked as approximate position-based context; the screenshot timestamp itself is exact.
 
 The first recording may ask for Microphone and Screen Recording permission. macOS may require the app to be restarted after Screen Recording permission is granted; Wayland displays a desktop capture permission prompt through its native recorder.
 

@@ -26,7 +26,7 @@ pub(crate) fn extract_frame(
         let message = String::from_utf8_lossy(&output.stderr);
         Err(format!(
             "Could not extract a screenshot at {} from `{}`: {}",
-            crate::format_timestamp(seconds),
+            dicta_core::transcript::format_timestamp(seconds),
             video_path.display(),
             message.trim()
         ))

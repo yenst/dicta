@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check:versions
+      - run: npm run check
+      - run: npm run test:web
+      - run: npm run build:web
+
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/dicta-core
+            src-tauri
+            mcp
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          build-essential cmake clang libclang-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+          libasound2-dev libvulkan-dev libshaderc-dev patchelf pkg-config
+      - run: cargo fmt --manifest-path crates/dicta-core/Cargo.toml -- --check
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo fmt --manifest-path mcp/Cargo.toml -- --check
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml -p dicta-core
+      - run: cargo test --locked --manifest-path mcp/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml -p dicta-core --all-targets -- -D warnings
+      - run: cargo clippy --locked --manifest-path mcp/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo build --locked --manifest-path mcp/Cargo.toml
+      - run: node scripts/smoke-mcp.mjs
+
+  packaging-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm run check:versions
+      - name: Validate shell and Tauri configuration
+        run: |
+          bash -n scripts/lint-rust.sh
+          bash -n scripts/package-linux.sh
+          bash -n scripts/test-rust.sh
+          python -m json.tool src-tauri/tauri.conf.json >/dev/null
+          python -m json.tool src-tauri/tauri.linux.conf.json >/dev/null
+          python -m json.tool src-tauri/tauri.macos.conf.json >/dev/null
+
+  linux-bundle:
+    needs: [frontend, rust, packaging-contract]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            mcp
+      - name: Install Linux build dependencies
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          build-essential cmake clang libclang-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+          libasound2-dev libvulkan-dev libshaderc-dev patchelf pkg-config
+      - run: npm ci
+      - run: npm run bundle:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dicta-linux-${{ runner.arch }}
+          path: src-tauri/target/release/bundle/linux/Dicta_*.tar.gz
+          if-no-files-found: error
+
+  macos-bundles:
+    needs: [frontend, rust, packaging-contract]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            mcp
+      - run: npm ci
+      - run: npm run tauri -- build --no-sign --bundles app,dmg -- --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dicta-macos-${{ runner.arch }}
+          path: |
+            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
