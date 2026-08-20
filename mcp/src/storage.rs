@@ -127,7 +127,12 @@ pub(crate) fn load_recordings(source: &RecordingSource) -> Result<LoadReport, St
                     .push(format!("Ignored symlinked artifact `{}`", path.display()));
                 continue;
             }
+            let is_transcript_sidecar = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".transcript.json"));
             if !file_type.is_file()
+                || is_transcript_sidecar
                 || path.extension().and_then(|extension| extension.to_str()) != Some("json")
             {
                 continue;
@@ -376,6 +381,11 @@ mod tests {
         let branch = storage.join("branches/main");
         write_metadata(&branch, "valid", json!({ "id": "valid", "video_path": "" }));
         let day = branch.join("recordings/2026-08-20");
+        fs::write(
+            day.join("valid.transcript.json"),
+            json!({ "segments": [] }).to_string(),
+        )
+        .unwrap();
         fs::write(day.join("corrupt.json"), "{").unwrap();
         let outside = root.path().join("outside");
         fs::create_dir_all(&outside).unwrap();
@@ -391,6 +401,10 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("symlink-day")));
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("transcript.json")));
     }
 
     #[test]
