@@ -166,15 +166,26 @@ void AnnotationItemTest::undoAndClearAreDeterministic()
 void AnnotationItemTest::overlayWindowFlagsFollowInputModeSynchronously()
 {
     QQuickWindow window;
-    window.setFlags(Qt::FramelessWindowHint);
+    window.setFlags(
+        Qt::FramelessWindowHint
+        | Qt::Tool
+        | Qt::BypassWindowManagerHint
+        | Qt::WindowStaysOnTopHint
+    );
 
     OverlayController::applyWindowInputMode(window, false);
     QVERIFY(window.flags().testFlag(Qt::FramelessWindowHint));
+    QVERIFY(window.flags().testFlag(Qt::Tool));
+    QVERIFY(window.flags().testFlag(Qt::BypassWindowManagerHint));
+    QVERIFY(window.flags().testFlag(Qt::WindowStaysOnTopHint));
     QVERIFY(window.flags().testFlag(Qt::WindowTransparentForInput));
     QVERIFY(window.flags().testFlag(Qt::WindowDoesNotAcceptFocus));
 
     OverlayController::applyWindowInputMode(window, true);
     QVERIFY(window.flags().testFlag(Qt::FramelessWindowHint));
+    QVERIFY(window.flags().testFlag(Qt::Tool));
+    QVERIFY(window.flags().testFlag(Qt::BypassWindowManagerHint));
+    QVERIFY(window.flags().testFlag(Qt::WindowStaysOnTopHint));
     QVERIFY(!window.flags().testFlag(Qt::WindowTransparentForInput));
     QVERIFY(!window.flags().testFlag(Qt::WindowDoesNotAcceptFocus));
 

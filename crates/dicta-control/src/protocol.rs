@@ -187,6 +187,14 @@ pub enum Command {
         recording: RecordingSelector,
         notes: Vec<dicta_core::TimelineNote>,
     },
+    RecordingVoiceNoteTranscribe {
+        recording: RecordingSelector,
+        note_id: String,
+        timestamp_seconds: f64,
+        audio_path: String,
+    },
+    RecordingVoiceNoteCancel,
+    RecordingVoiceNoteStatus,
     RecordingDelete {
         recording: RecordingSelector,
     },
@@ -252,7 +260,29 @@ pub enum Response {
     Recordings(Vec<RecordingSummary>),
     Recording(RecordingSummary),
     RecordingDetails(Box<dicta_core::RecordingFile>),
+    VoiceNote(VoiceNoteStatus),
     Context { text: String },
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceNoteState {
+    #[default]
+    Idle,
+    Processing,
+    Complete,
+    Failed,
+    Cancelling,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct VoiceNoteStatus {
+    pub state: VoiceNoteState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

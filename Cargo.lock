@@ -119,6 +119,7 @@ dependencies = [
  "dicta-engine",
  "dicta-runtime",
  "dicta-transcribe",
+ "serde",
  "serde_json",
 ]
 

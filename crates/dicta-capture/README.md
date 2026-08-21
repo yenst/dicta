@@ -21,7 +21,7 @@ Capture writes to a unique same-directory staging file. A clean stop syncs the
 file and promotes it without replacing an existing destination; aborts, failed
 stops, and drops reap the child and remove the staging artifact.
 
-This crate deliberately does not support X11, macOS, Spectacle, or an async
+This crate deliberately does not support X11, Spectacle, or an async
 runtime. The artifact always retains the selected output/region geometry,
 scale, and encoded pixel size for annotation mapping. A portal may let the user
 choose a window whose actual bounds differ from the selected output metadata;

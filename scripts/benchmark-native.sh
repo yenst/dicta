@@ -5,7 +5,6 @@ set -uo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_dir/.." && pwd -P)
 native_binary="$repo_root/apps/dicta-native/build/dicta-native"
-tauri_binary="$repo_root/src-tauri/target/release/dicta"
 runs=6
 idle_seconds=2
 runtime_mode=auto
@@ -19,7 +18,6 @@ Usage: scripts/benchmark-native.sh [options]
 
 Options:
   --native PATH       Native Qt executable to inspect
-  --tauri PATH        Existing Tauri executable to compare (never built here)
   --runs N            Window-map samples; first is reported separately (default: 6)
   --idle-seconds N    Seconds before RSS sampling (default: 2)
   --runtime MODE      auto, gui, headless, or skip (default: auto)
@@ -46,11 +44,6 @@ while (($# > 0)); do
         --native)
             (($# >= 2)) || die "--native requires a path"
             native_binary=$2
-            shift 2
-            ;;
-        --tauri)
-            (($# >= 2)) || die "--tauri requires a path"
-            tauri_binary=$2
             shift 2
             ;;
         --runs)
@@ -295,13 +288,6 @@ measure_gui_runtime() {
     fi
 }
 
-native_bytes=$(stat -c '%s' -- "$native_binary")
-tauri_present=false
-if [[ -f $tauri_binary && -x $tauri_binary ]]; then
-    tauri_present=true
-    tauri_bytes=$(stat -c '%s' -- "$tauri_binary")
-fi
-
 printf '# Dicta native benchmark report\n\n'
 printf -- '- Generated: `%s`\n' "$(date --iso-8601=seconds)"
 printf -- '- Kernel: `%s`\n' "$(uname -srmo)"
@@ -316,15 +302,6 @@ printf -- '- gpu-screen-recorder: `%s`\n' \
     "$(gpu-screen-recorder --version 2>/dev/null || printf 'not installed')"
 printf '\n## Static artifact measurements\n\n'
 emit_binary_facts 'Native Qt' "$native_binary"
-
-if $tauri_present; then
-    emit_binary_facts 'Existing Tauri artifact' "$tauri_binary"
-    awk -v native="$native_bytes" -v tauri="$tauri_bytes" 'BEGIN {
-        printf "The existing Tauri artifact is %.2fx the native artifact size; the native artifact is %.1f%% smaller.\n\n", tauri / native, (1 - native / tauri) * 100
-    }'
-else
-    printf '### Existing Tauri artifact\n\nNot compared: `%s` is not present and this script never builds or downloads it.\n\n' "$tauri_binary"
-fi
 
 printf '## Runtime measurements\n\n'
 if [[ $runtime_mode == auto ]]; then
@@ -360,11 +337,10 @@ esac
 
 printf '\n## Method notes\n\n'
 printf '%s\n' \
-    '- File size is the exact current ELF artifact size; neither artifact is copied or stripped.' \
+    '- File size is the exact current ELF artifact size; the artifact is not copied or stripped.' \
     '- Direct libraries come from ELF `DT_NEEDED`; the `ldd` count includes transitively resolved runtime entries.' \
     '- GUI startup uses the first Hyprland client entry for the child PID as a repeatable event-loop/window-map proxy.' \
-    '- “First” and “subsequent” runs do not claim physical cold-cache timing because this script does not require root or drop Linux page caches.' \
-    '- Tauri is inspected only when an executable already exists. It is not launched, rebuilt, or allowed to mutate application state.'
+    '- “First” and “subsequent” runs do not claim physical cold-cache timing because this script does not require root or drop Linux page caches.'
 
 if [[ -s $runtime_log ]]; then
     printf '\n## Runtime diagnostics\n\n```text\n'

@@ -4,19 +4,19 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
-for command_name in cargo cmake find grep gzip install node readelf rustc tar; do
+for command_name in cargo cmake find grep gzip install jq readelf rustc tar timeout; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Missing required native packaging command: $command_name" >&2
     exit 1
   fi
 done
 
-version="$(node scripts/check-versions.mjs --print)"
+version="$(bash scripts/check-versions.sh --print)"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
   echo "Invalid package version: $version" >&2
   exit 1
 fi
-node integrations/omarchy/dicta-context/tests/native-cli-contract.mjs
+bash integrations/omarchy/dicta-context/tests/native-cli-contract.sh
 bash integrations/omarchy/tests/shortcut-install-test.sh
 if ! grep -Fxq 'Exec=dicta ui' apps/dicta-native/dicta-native.desktop; then
   echo "The desktop launcher must activate the single native host through 'dicta ui'" >&2
@@ -76,13 +76,14 @@ cmake --install "$native_build_dir" --prefix "$stage_root/usr"
 
 install -Dm755 "$cargo_target_root/release/dicta" "$stage_root/usr/bin/dicta"
 install -Dm755 "$mcp_binary" "$stage_root/usr/lib/Dicta/dicta-mcp"
-install -Dm644 src-tauri/resources/ggml-base-q5_1.bin "$stage_root/usr/lib/Dicta/ggml-base-q5_1.bin"
+ln -s ../lib/Dicta/dicta-mcp "$stage_root/usr/bin/dicta-mcp"
+install -Dm644 apps/dicta-native/resources/ggml-base-q5_1.bin "$stage_root/usr/lib/Dicta/ggml-base-q5_1.bin"
 install -Dm644 apps/dicta-native/dicta-native.desktop "$stage_root/usr/share/applications/dicta.desktop"
 install -Dm644 apps/dicta-native/README.md "$stage_root/usr/share/doc/Dicta/README.md"
-install -Dm644 src-tauri/icons/32x32.png "$stage_root/usr/share/icons/hicolor/32x32/apps/dicta.png"
-install -Dm644 src-tauri/icons/128x128.png "$stage_root/usr/share/icons/hicolor/128x128/apps/dicta.png"
-install -Dm644 src-tauri/icons/128x128@2x.png "$stage_root/usr/share/icons/hicolor/256x256/apps/dicta.png"
-install -Dm644 src-tauri/icons/icon.png "$stage_root/usr/share/icons/hicolor/512x512/apps/dicta.png"
+install -Dm644 apps/dicta-native/icons/32x32.png "$stage_root/usr/share/icons/hicolor/32x32/apps/dicta.png"
+install -Dm644 apps/dicta-native/icons/128x128.png "$stage_root/usr/share/icons/hicolor/128x128/apps/dicta.png"
+install -Dm644 apps/dicta-native/icons/256x256.png "$stage_root/usr/share/icons/hicolor/256x256/apps/dicta.png"
+install -Dm644 apps/dicta-native/icons/512x512.png "$stage_root/usr/share/icons/hicolor/512x512/apps/dicta.png"
 install -Dm755 integrations/omarchy/install.sh "$stage_root/usr/bin/dicta-install-omarchy-plugin"
 install -Dm755 integrations/omarchy/install-shortcut.sh "$stage_root/usr/bin/dicta-install-omarchy-shortcut"
 install -Dm644 integrations/omarchy/dicta-context/manifest.json "$stage_root/usr/share/Dicta/omarchy/dicta.context/manifest.json"
@@ -93,6 +94,7 @@ install -Dm644 integrations/omarchy/dicta-context/assets/dicta-mark-light.png "$
 
 test -x "$stage_root/usr/bin/dicta"
 test -x "$stage_root/usr/bin/dicta-native"
+test -x "$stage_root/usr/bin/dicta-mcp"
 test -x "$stage_root/usr/bin/dicta-install-omarchy-plugin"
 test -x "$stage_root/usr/bin/dicta-install-omarchy-shortcut"
 test -x "$stage_root/usr/lib/Dicta/dicta-mcp"
@@ -134,6 +136,7 @@ tar -tzf "$archive_tmp" >"$archive_listing"
 for required_path in \
   Dicta/usr/bin/dicta \
   Dicta/usr/bin/dicta-native \
+  Dicta/usr/bin/dicta-mcp \
   Dicta/usr/bin/dicta-install-omarchy-plugin \
   Dicta/usr/bin/dicta-install-omarchy-shortcut \
   Dicta/usr/lib/Dicta/dicta-mcp \
@@ -160,7 +163,7 @@ QT_QPA_PLATFORM=offscreen \
 QT_QPA_PLATFORMTHEME= \
 QT_STYLE_OVERRIDE= \
   "$packaged_root/usr/bin/dicta-native" --smoke-overlay
-node scripts/smoke-mcp.mjs "$packaged_root/usr/lib/Dicta/dicta-mcp"
+bash scripts/smoke-mcp.sh "$packaged_root/usr/lib/Dicta/dicta-mcp"
 
 mv -f -- "$archive_tmp" "$archive_path"
 chmod 0644 "$archive_path"

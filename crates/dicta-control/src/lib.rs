@@ -20,5 +20,5 @@ pub use protocol::{
     AnnotationTool, CleanupSummary, Command, Event, EventEnvelope, ModelInstallStage, ModelState,
     ModelStatusSummary, ModelTier, ProjectSummary, RecordingSelector, RecordingSummary,
     RequestEnvelope, RequestId, Response, ResponseEnvelope, ResponsePayload, ServerMessage,
-    PROTOCOL_VERSION,
+    VoiceNoteState, VoiceNoteStatus, PROTOCOL_VERSION,
 };

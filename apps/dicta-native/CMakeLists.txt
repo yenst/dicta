@@ -97,10 +97,10 @@ qt_add_qml_module(dicta-native
 
 qt_add_resources(dicta-native "dicta_brand_assets"
     PREFIX "/dicta/assets"
-    BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../src/assets"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets"
     FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../src/assets/dicta-mark.png"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../src/assets/dicta-mark-light.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/dicta-mark.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/dicta-mark-light.png"
 )
 
 if(TARGET Qt6::Multimedia)
@@ -175,10 +175,10 @@ if(DICTA_BUILD_TESTS)
     )
     qt_add_resources(dicta-dashboard-qml-test "dicta_dashboard_brand_assets"
         PREFIX "/dicta/assets"
-        BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../src/assets"
+        BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets"
         FILES
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../src/assets/dicta-mark.png"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../src/assets/dicta-mark-light.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/dicta-mark.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/dicta-mark-light.png"
     )
     target_compile_definitions(dicta-dashboard-qml-test PRIVATE
         DICTA_MAIN_QML_PATH="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml"

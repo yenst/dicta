@@ -1,15 +1,14 @@
 # Dicta native architecture
 
-Dicta is moving to one Linux-native product with a Rust domain core, a thin Qt
-Quick presentation layer, and a first-class local control protocol. The current
-Tauri application remains available while native capabilities reach parity.
+Dicta is one Linux-native product with a Rust domain core, a thin Qt Quick
+presentation layer, and a first-class local control protocol.
 
 ## Boundaries
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
 | `dicta-core` | Persisted IDs, recordings, transcripts, annotations, storage rules | UI or worker processes |
-| `dicta-engine` | The single mutable application state machine | Qt, Tauri, sockets, capture, transcription |
+| `dicta-engine` | The single mutable application state machine | Qt, sockets, capture, transcription |
 | `dicta-control` | Versioned wire types, CLI grammar, bounded NDJSON, private Unix sockets | Product state or platform behavior |
 | `dicta-capture` | Wayland output/audio discovery and one recorder lifecycle | UI or persisted metadata |
 | `dicta-transcribe` | One bounded lazy transcription worker | UI or recording state transitions |
@@ -70,21 +69,20 @@ and branch storage semantics continue to come from `dicta-core`.
 
 ## Performance rules
 
-- No Node.js or WebView in the native process.
+- No WebView in the native process.
 - No model or capture initialization during idle startup.
 - System Qt libraries are dynamically linked.
 - External programs are invoked with structured argument arrays, never shell
   command strings derived from metadata.
 - Large transcription models are loaded lazily by one worker and released after
   a configured idle period.
-- Platform scope is Omarchy/Hyprland Wayland first; macOS and X11 compatibility
-  are not constraints on the new implementation.
+- Platform scope is Omarchy/Hyprland Wayland; X11 compatibility is not a
+  constraint on the implementation.
 
 ## Migration rule
 
-Native components are added beside the legacy application and verified
-independently. A legacy path is removed only after its native replacement has
-recording, playback, CLI/MCP, packaging, and persisted-data parity.
+Native components are verified together across recording, playback, CLI/MCP,
+packaging, and persisted-data compatibility.
 
 The executable parity gates and current migration state are tracked in
 [`native-feature-parity.md`](native-feature-parity.md). Fake adapters and wire

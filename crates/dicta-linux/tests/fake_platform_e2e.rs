@@ -769,6 +769,106 @@ fn project_link_create_and_remove_preserve_repository_local_storage() {
 }
 
 #[test]
+fn linked_git_worktree_is_independent_confined_and_recordable() {
+    let root = std::env::temp_dir().join(format!(
+        "dicta-linux-real-worktree-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let storage_root = root.join("storage");
+    let repository = root.join("repository");
+    let worktree = root.join("linked");
+    fs::create_dir_all(&storage_root).unwrap();
+    assert!(ProcessCommand::new("git")
+        .args(["init", "-b", "main"])
+        .arg(&repository)
+        .status()
+        .unwrap()
+        .success());
+    git(
+        &repository,
+        &["config", "user.email", "dicta@example.invalid"],
+    );
+    git(&repository, &["config", "user.name", "Dicta Test"]);
+    fs::write(repository.join("tracked"), "fixture").unwrap();
+    git(&repository, &["add", "tracked"]);
+    git(&repository, &["commit", "-m", "fixture"]);
+    git(
+        &repository,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/worktree",
+            worktree.to_str().unwrap(),
+        ],
+    );
+
+    let mut storage = LinuxStorage::new(StorageLayout::new(&storage_root), FixedClock);
+    let linked = storage
+        .add_project(worktree.to_string_lossy().as_ref(), Some("Linked worktree"))
+        .unwrap();
+    let main = storage
+        .add_project(repository.to_string_lossy().as_ref(), Some("Main checkout"))
+        .unwrap();
+    assert_ne!(linked.id, main.id);
+    assert_eq!(
+        Path::new(linked.source_path.as_deref().unwrap()),
+        worktree.canonicalize().unwrap()
+    );
+    assert!(fs::read_to_string(repository.join(".git/info/exclude"))
+        .unwrap()
+        .lines()
+        .any(|line| line == ".dicta/"));
+
+    let mut runtime = fake_linux_runtime(&storage_root);
+    runtime.handle(request(
+        70,
+        Command::ProjectSelect {
+            project: linked.id.to_string(),
+        },
+    ));
+    runtime.handle(request(
+        71,
+        Command::RecordStart {
+            project: None,
+            note: Some("linked worktree recording".to_owned()),
+        },
+    ));
+    runtime.handle(request(72, Command::RecordStop));
+    drop(runtime);
+
+    let recordings = storage.load_recordings().unwrap();
+    let recorded = recordings
+        .iter()
+        .find(|recording| recording.project_id == linked.id)
+        .unwrap();
+    assert_eq!(recorded.git_branch.as_deref(), Some("feature/worktree"));
+    assert!(Path::new(&recorded.video_path).starts_with(worktree.join(".dicta")));
+    storage.remove_project(&linked.id).unwrap();
+    assert!(worktree.join(".dicta/project.json").is_file());
+
+    let malicious = root.join("malicious");
+    let outside = root.join("outside-admin");
+    fs::create_dir_all(&malicious).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("sentinel"), "untouched").unwrap();
+    fs::write(
+        malicious.join(".git"),
+        format!("gitdir: {}\n", outside.display()),
+    )
+    .unwrap();
+    assert!(storage
+        .add_project(malicious.to_string_lossy().as_ref(), None)
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel")).unwrap(),
+        "untouched"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn linked_live_capture_honors_branch_locking_for_paths_and_metadata() {
     let root = std::env::temp_dir().join(format!(
         "dicta-linux-branch-capture-{}-{:?}",

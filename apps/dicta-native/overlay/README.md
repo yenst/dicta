@@ -16,18 +16,9 @@ input modes and tools, undo, clear, finish/hide, and forward normalized strokes.
 The next runtime adapter can consume those signals without putting recording
 logic into QML.
 
-## Wayland placement gate
+## Wayland placement
 
-The current placement port reports `best_effort_qt_toplevel` and
-`guaranteedLayerShell == false`. It selects the correct `QScreen` and requests a
-fullscreen transparent Qt toplevel, but does not claim overlay-layer ordering.
-`WindowStaysOnTopHint` was deliberately removed because it cannot guarantee
-wlroots layer-shell semantics.
-
-Guaranteed placement requires a Qt-compatible layer-shell client integration
-that can attach Qt's existing `wl_surface` to `zwlr_layer_shell_v1`, select the
-overlay layer, anchor all four edges, use a non-exclusive zone, configure
-keyboard interactivity, and bind the recording output's `wl_output` before the
-first commit. This system has Wayland client headers but no LayerShellQt-style
-dependency, so that implementation remains isolated behind
-`OverlayPlacementPort` instead of being faked in QML.
+The placement port reports `hyprland_bypass_toplevel`. It selects the exact
+recording `QScreen` and requests a frameless, always-above bypass/tool
+fullscreen transparent Qt surface. The controller remaps that same surface
+when it switches between click-through and focused annotation input.

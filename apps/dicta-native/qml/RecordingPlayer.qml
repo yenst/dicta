@@ -17,6 +17,10 @@ Item {
         player.setPosition(Math.max(0, Number(seconds) || 0) * 1000)
     }
 
+    function pause() {
+        player.pause()
+    }
+
     function duration(value) {
         var total = Math.max(0, Math.round(Number(value) / 1000 || 0))
         return String(Math.floor(total / 60)).padStart(2, "0") + ":"

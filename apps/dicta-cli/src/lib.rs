@@ -622,6 +622,12 @@ fn write_response(
         }
         Response::Recording(recording) => write_recording(output, recording).map_err(io_failure),
         Response::RecordingDetails(recording) => write_recording_file(output, recording),
+        Response::VoiceNote(status) => writeln!(
+            output,
+            "voice note: {:?} · {}",
+            status.state, status.message
+        )
+        .map_err(io_failure),
         Response::Context { text } => write_text(output, text),
     }
 }

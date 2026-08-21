@@ -4,6 +4,7 @@
 
 mod capture;
 mod clock;
+mod codex;
 mod config;
 mod ids;
 mod omarchy;
@@ -14,6 +15,7 @@ mod transcription;
 
 pub use capture::{CaptureStartObserver, LinuxCapture, NoopCaptureStartObserver};
 pub use clock::SystemClock;
+pub use codex::{CodexMcpIntegration, CodexMcpState, CodexMcpStatus};
 pub use config::{LinuxConfig, LinuxTranscriptionConfig, StorageLayout};
 pub use ids::FilesystemIdSource;
 pub use settings::SettingsStore;

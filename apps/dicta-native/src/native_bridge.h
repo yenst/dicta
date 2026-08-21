@@ -25,6 +25,8 @@ class NativeBridge final : public QObject
     Q_PROPERTY(QVariantMap currentProject READ currentProject NOTIFY dashboardChanged)
     Q_PROPERTY(QVariantMap modelStatus READ modelStatus NOTIFY dashboardChanged)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY dashboardChanged)
+    Q_PROPERTY(QVariantMap codexMcp READ codexMcp NOTIFY dashboardChanged)
+    Q_PROPERTY(QVariantMap voiceNoteStatus READ voiceNoteStatus NOTIFY selectedRecordingChanged)
     Q_PROPERTY(QString settingsMessage READ settingsMessage NOTIFY dashboardChanged)
     Q_PROPERTY(QVariantList recentRecordings READ recentRecordings NOTIFY dashboardChanged)
     Q_PROPERTY(QString uiError READ uiError NOTIFY dashboardChanged)
@@ -50,6 +52,8 @@ public:
     [[nodiscard]] QVariantMap currentProject() const;
     [[nodiscard]] QVariantMap modelStatus() const;
     [[nodiscard]] QVariantMap settings() const;
+    [[nodiscard]] QVariantMap codexMcp() const;
+    [[nodiscard]] QVariantMap voiceNoteStatus() const;
     [[nodiscard]] QString settingsMessage() const;
     [[nodiscard]] QVariantList recentRecordings() const;
     [[nodiscard]] QString uiError() const;
@@ -72,6 +76,9 @@ public:
     Q_INVOKABLE [[nodiscard]] bool transcribeSelectedRecording();
     Q_INVOKABLE [[nodiscard]] bool addTimelineNote(const QString &text, double timestampSeconds);
     Q_INVOKABLE [[nodiscard]] bool removeTimelineNote(const QString &noteId);
+    Q_INVOKABLE [[nodiscard]] bool startVoiceNote(double timestampSeconds);
+    Q_INVOKABLE [[nodiscard]] bool stopVoiceNote();
+    Q_INVOKABLE [[nodiscard]] bool cancelVoiceNote();
     Q_INVOKABLE [[nodiscard]] bool copySelectedContext();
     Q_INVOKABLE [[nodiscard]] bool revealSelectedRecording();
     Q_INVOKABLE [[nodiscard]] bool openSelectedRecording();
@@ -82,6 +89,9 @@ public:
     Q_INVOKABLE [[nodiscard]] bool setGeneralPath(const QString &path);
     Q_INVOKABLE [[nodiscard]] bool cleanupMergedVideos();
     Q_INVOKABLE [[nodiscard]] bool installQualityModel();
+    Q_INVOKABLE [[nodiscard]] bool refreshCodexMcp();
+    Q_INVOKABLE [[nodiscard]] bool connectCodexMcp();
+    Q_INVOKABLE [[nodiscard]] bool restartCodexMcp();
 
     [[nodiscard]] bool startHost(
         const QString &socketPath,
@@ -114,6 +124,9 @@ private:
     [[nodiscard]] bool sendAnnotationCommand(quint32 action, quint32 tool = 0);
     [[nodiscard]] bool updateSetting(quint32 key, const QString &value);
     [[nodiscard]] bool saveTimelineNotes(const QVariantList &notes);
+    [[nodiscard]] bool applyCodexMcpAction(quint32 action);
+    [[nodiscard]] bool readCodexMcpStatus(quint32 action = 0);
+    [[nodiscard]] bool refreshVoiceNoteStatus();
 
     OverlayController &m_overlay;
     QTimer m_statusTimer;
@@ -128,6 +141,8 @@ private:
     QVariantMap m_currentProject;
     QVariantMap m_modelStatus;
     QVariantMap m_settings;
+    QVariantMap m_codexMcp;
+    QVariantMap m_voiceNoteStatus {{QStringLiteral("state"), QStringLiteral("idle")}};
     QString m_settingsMessage;
     QVariantList m_recentRecordings;
     QString m_uiError;

@@ -76,6 +76,20 @@ std::size_t dicta_native_host_cleanup_merged(
     std::size_t capacity
 );
 int dicta_native_host_model_install_quality();
+std::size_t dicta_native_codex_mcp_status(unsigned char *output, std::size_t capacity);
+std::size_t dicta_native_codex_mcp_action(
+    std::uint32_t action,
+    unsigned char *output,
+    std::size_t capacity
+);
+int dicta_native_voice_note_start(
+    const unsigned char *recordingId,
+    std::size_t recordingIdLength,
+    double timestampSeconds
+);
+int dicta_native_voice_note_stop();
+int dicta_native_voice_note_cancel();
+std::size_t dicta_native_voice_note_status(unsigned char *output, std::size_t capacity);
 std::size_t dicta_native_host_ui_snapshot(unsigned char *output, std::size_t capacity);
 std::size_t dicta_native_host_recording_detail(
     const unsigned char *recordingId,
@@ -121,6 +135,8 @@ constexpr qsizetype UiSnapshotCapacity = 64 * 1024;
 constexpr qsizetype RecordingDetailCapacity = 1024 * 1024;
 constexpr qsizetype RecordingContextCapacity = 4 * 1024 * 1024;
 constexpr qsizetype CleanupSummaryCapacity = 64 * 1024;
+constexpr qsizetype CodexMcpStatusCapacity = 16 * 1024;
+constexpr qsizetype VoiceNoteStatusCapacity = 16 * 1024;
 
 QString hostStateName(const std::uint32_t state)
 {
@@ -248,6 +264,16 @@ QVariantMap NativeBridge::modelStatus() const
 QVariantMap NativeBridge::settings() const
 {
     return m_settings;
+}
+
+QVariantMap NativeBridge::codexMcp() const
+{
+    return m_codexMcp;
+}
+
+QVariantMap NativeBridge::voiceNoteStatus() const
+{
+    return m_voiceNoteStatus;
 }
 
 QString NativeBridge::settingsMessage() const
@@ -535,6 +561,58 @@ bool NativeBridge::installQualityModel()
     return refreshDashboard();
 }
 
+bool NativeBridge::refreshCodexMcp()
+{
+    return readCodexMcpStatus();
+}
+
+bool NativeBridge::connectCodexMcp()
+{
+    return applyCodexMcpAction(1U);
+}
+
+bool NativeBridge::restartCodexMcp()
+{
+    return applyCodexMcpAction(2U);
+}
+
+bool NativeBridge::applyCodexMcpAction(const quint32 action)
+{
+    return readCodexMcpStatus(action);
+}
+
+bool NativeBridge::readCodexMcpStatus(const quint32 action)
+{
+    QByteArray bytes(CodexMcpStatusCapacity, '\0');
+    const std::size_t length = action == 0
+        ? dicta_native_codex_mcp_status(
+              reinterpret_cast<unsigned char *>(bytes.data()),
+              std::size_t(bytes.size())
+          )
+        : dicta_native_codex_mcp_action(
+              action,
+              reinterpret_cast<unsigned char *>(bytes.data()),
+              std::size_t(bytes.size())
+          );
+    if (length == 0 || length > std::size_t(bytes.size())) {
+        m_uiError = lastHostError();
+        emit dashboardChanged();
+        return false;
+    }
+    bytes.truncate(qsizetype(length));
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        m_uiError = tr("Codex MCP status returned invalid JSON.");
+        emit dashboardChanged();
+        return false;
+    }
+    m_codexMcp = document.object().toVariantMap();
+    m_uiError.clear();
+    emit dashboardChanged();
+    return true;
+}
+
 bool NativeBridge::selectProject(const QString &projectId)
 {
     const QByteArray id = projectId.trimmed().toUtf8();
@@ -636,7 +714,14 @@ void NativeBridge::closeRecording()
     if (m_selectedRecording.isEmpty()) {
         return;
     }
+    const QString voiceState = m_voiceNoteStatus.value(QStringLiteral("state")).toString();
+    if (voiceState == QStringLiteral("recording")
+        || voiceState == QStringLiteral("processing")
+        || voiceState == QStringLiteral("cancelling")) {
+        (void)cancelVoiceNote();
+    }
     m_selectedRecording.clear();
+    m_voiceNoteStatus = QVariantMap {{QStringLiteral("state"), QStringLiteral("idle")}};
     emit selectedRecordingChanged();
 }
 
@@ -731,6 +816,78 @@ bool NativeBridge::removeTimelineNote(const QString &noteId)
         return false;
     }
     return saveTimelineNotes(notes);
+}
+
+bool NativeBridge::startVoiceNote(const double timestampSeconds)
+{
+    const QByteArray recordingId = selectedRecordingId().toUtf8();
+    if (recordingId.isEmpty() || !std::isfinite(timestampSeconds) || timestampSeconds < 0.0) {
+        return false;
+    }
+    if (dicta_native_voice_note_start(
+            reinterpret_cast<const unsigned char *>(recordingId.constData()),
+            std::size_t(recordingId.size()),
+            timestampSeconds
+        ) != 0) {
+        m_uiError = lastHostError();
+        emit dashboardChanged();
+        return false;
+    }
+    return refreshVoiceNoteStatus();
+}
+
+bool NativeBridge::stopVoiceNote()
+{
+    if (dicta_native_voice_note_stop() != 0) {
+        m_uiError = lastHostError();
+        emit dashboardChanged();
+        return false;
+    }
+    return refreshVoiceNoteStatus();
+}
+
+bool NativeBridge::cancelVoiceNote()
+{
+    if (dicta_native_voice_note_cancel() != 0) {
+        m_uiError = lastHostError();
+        emit dashboardChanged();
+        return false;
+    }
+    return refreshVoiceNoteStatus();
+}
+
+bool NativeBridge::refreshVoiceNoteStatus()
+{
+    QByteArray bytes(VoiceNoteStatusCapacity, '\0');
+    const std::size_t length = dicta_native_voice_note_status(
+        reinterpret_cast<unsigned char *>(bytes.data()),
+        std::size_t(bytes.size())
+    );
+    if (length == 0 || length > std::size_t(bytes.size())) {
+        m_uiError = lastHostError();
+        emit dashboardChanged();
+        return false;
+    }
+    bytes.truncate(qsizetype(length));
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        m_uiError = tr("Voice-note status returned invalid JSON.");
+        emit dashboardChanged();
+        return false;
+    }
+    const QString previous = m_voiceNoteStatus.value(QStringLiteral("state")).toString();
+    m_voiceNoteStatus = document.object().toVariantMap();
+    const QString current = m_voiceNoteStatus.value(QStringLiteral("state")).toString();
+    m_uiError.clear();
+    if (previous == QStringLiteral("processing") && current == QStringLiteral("complete")) {
+        const QString recordingId = selectedRecordingId();
+        if (!recordingId.isEmpty()) {
+            (void)selectRecording(recordingId);
+        }
+    }
+    emit selectedRecordingChanged();
+    return true;
 }
 
 bool NativeBridge::saveTimelineNotes(const QVariantList &notes)
@@ -1004,6 +1161,12 @@ void NativeBridge::refreshHostDiagnostics()
         emit hostFailed();
     }
     if (state == QStringLiteral("running")) {
+        const QString voiceState = m_voiceNoteStatus.value(QStringLiteral("state")).toString();
+        if (voiceState == QStringLiteral("recording")
+            || voiceState == QStringLiteral("processing")
+            || voiceState == QStringLiteral("cancelling")) {
+            (void)refreshVoiceNoteStatus();
+        }
         if (becameRunning || m_dashboardRefreshCountdown <= 0) {
             (void)refreshDashboard();
             m_dashboardRefreshCountdown = 4;

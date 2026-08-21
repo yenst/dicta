@@ -3,7 +3,7 @@
 `dicta-native` is the single-process Linux host for Dicta. Qt Quick owns the
 windowing and scene-graph overlay, while a synchronous Rust service thread owns
 the recording runtime, local control socket, capture ports, annotation state,
-and atomic recording metadata. There is no WebView, Node.js process, or async
+and atomic recording metadata. There is no WebView process or async
 runtime in this path.
 
 The production constructor discovers the requested Hyprland output through
@@ -80,14 +80,10 @@ transcripts, notes, and unmerged/default/active-branch recordings are kept.
 ## Overlay placement boundary
 
 The transparent overlay is deliberately functional and unstyled. Drawing is a
-GPU-backed `QQuickItem`; it does not use `QQuickPaintedItem`.
-
-Placement currently uses the isolated `OverlayPlacementPort` implementation
-reported as `best_effort_qt_toplevel`. It does **not** claim guaranteed wlroots
-layer-shell placement. Guaranteed compositor-wide z-order and input-region
-behavior remain gated on adding and packaging a Qt layer-shell integration (or
-implementing that protocol in a dedicated compositor port). The code does not
-substitute `WindowStaysOnTop` and call it a guarantee.
+GPU-backed `QQuickItem`; it does not use `QQuickPaintedItem`. The isolated
+placement port selects the requested `QScreen`, maps a frameless fullscreen
+Hyprland bypass/tool surface, keeps it above ordinary windows, and switches
+between click-through and focused annotation modes synchronously.
 
 ## Verification
 
@@ -117,13 +113,13 @@ deny `bind(2)` must run those tests outside that restriction.
 From the repository root, build the system-Qt native archive with:
 
 ```sh
-npm run bundle:native-linux
+bash scripts/package-native-linux.sh
 ```
 
 The archive contains `dicta-native`, the Rust `dicta` CLI, the read-only MCP
 helper, compact Whisper model, desktop entry, icons, and optional Omarchy bar
-plugin. It deliberately does not include Tauri, WebKitGTK, Node.js, or bundled
-Qt libraries. Build it on the Linux architecture where it will run; cross-
+plugin. It deliberately does not include a web runtime or bundled Qt libraries.
+Build it on the Linux architecture where it will run; cross-
 compiling the Qt host is rejected until a supported Qt toolchain file exists.
 
 ## Omarchy recording shortcut
@@ -146,6 +142,5 @@ with `dicta-install-omarchy-shortcut --remove`; the underlying binding becomes
 active again after reload.
 
 Use `--shortcut control_space` (or another supported preset) to override the
-stored value during installation. The old Tauri-only
-`dicta --toggle-recording` flag is migrated by the installer and is not part of
-the native CLI.
+stored value during installation. The native CLI contract uses
+`dicta record toggle`.

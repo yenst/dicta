@@ -9,6 +9,9 @@ Window {
     color: "transparent"
     visible: false
     flags: Qt.FramelessWindowHint
+        | Qt.Tool
+        | Qt.BypassWindowManagerHint
+        | Qt.WindowStaysOnTopHint
 
     property bool annotationMode: false
     property alias tool: surface.tool

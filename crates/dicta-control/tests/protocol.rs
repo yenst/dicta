@@ -4,7 +4,7 @@ use dicta_control::{
     protocol::{AppPhase, StatusSnapshot},
     AnnotationTool, Command, Event, EventEnvelope, ModelInstallStage, ModelState,
     ModelStatusSummary, ModelTier, RequestEnvelope, RequestId, Response, ResponseEnvelope,
-    ServerMessage,
+    ServerMessage, VoiceNoteState, VoiceNoteStatus,
 };
 use std::{
     io::{BufReader, Cursor},
@@ -205,6 +205,43 @@ fn timeline_note_replacement_has_a_stable_typed_wire_shape() {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].timestamp_seconds, 12.5);
     assert_eq!(serde_json::to_value(request).unwrap(), encoded);
+}
+
+#[test]
+fn voice_note_transcription_and_status_have_stable_typed_wire_shapes() {
+    let request = RequestEnvelope::new(
+        request_id(29),
+        Command::RecordingVoiceNoteTranscribe {
+            recording: dicta_control::RecordingSelector::Id("recording-27".to_owned()),
+            note_id: "voice-1".to_owned(),
+            timestamp_seconds: 12.5,
+            audio_path: "/run/user/1000/dicta/voice-notes/voice-1.wav".to_owned(),
+        },
+    );
+    let encoded = serde_json::to_value(&request).unwrap();
+    assert_eq!(encoded["command"], "recording_voice_note_transcribe");
+    assert_eq!(encoded["params"]["note_id"], "voice-1");
+    assert_eq!(
+        serde_json::from_value::<RequestEnvelope>(encoded).unwrap(),
+        request
+    );
+
+    let response = ResponseEnvelope::success(
+        request_id(29),
+        Response::VoiceNote(VoiceNoteStatus {
+            state: VoiceNoteState::Processing,
+            recording_id: Some("recording-27".to_owned()),
+            note_id: Some("voice-1".to_owned()),
+            message: "Transcribing voice note…".to_owned(),
+        }),
+    );
+    let encoded = serde_json::to_value(&response).unwrap();
+    assert_eq!(encoded["result"]["type"], "voice_note");
+    assert_eq!(encoded["result"]["data"]["state"], "processing");
+    assert_eq!(
+        serde_json::from_value::<ResponseEnvelope>(encoded).unwrap(),
+        response
+    );
 }
 
 #[test]

@@ -6,6 +6,7 @@ use dicta_capture::{
 use dicta_control::{
     protocol::StatusSnapshot, socket::LocalClient, AnnotationTool, CleanupSummary, Command, Event,
     ModelStatusSummary, ProjectSummary, RecordingSelector, RecordingSummary, Response,
+    VoiceNoteStatus,
 };
 use dicta_core::{
     storage::{annotation_sidecar_path, write_json_atomic, AppSettings},
@@ -573,6 +574,43 @@ pub fn set_timeline_notes(
         Response::RecordingDetails(recording) => Ok(*recording),
         response => Err(format!(
             "timeline-note update returned unexpected response: {response:?}"
+        )),
+    }
+}
+
+pub fn transcribe_voice_note(
+    recording_id: String,
+    note_id: String,
+    timestamp_seconds: f64,
+    audio_path: String,
+) -> Result<VoiceNoteStatus, String> {
+    match control_request(Command::RecordingVoiceNoteTranscribe {
+        recording: RecordingSelector::Id(recording_id),
+        note_id,
+        timestamp_seconds,
+        audio_path,
+    })? {
+        Response::VoiceNote(status) => Ok(status),
+        response => Err(format!(
+            "voice-note transcription returned unexpected response: {response:?}"
+        )),
+    }
+}
+
+pub fn voice_note_status() -> Result<VoiceNoteStatus, String> {
+    match control_request(Command::RecordingVoiceNoteStatus)? {
+        Response::VoiceNote(status) => Ok(status),
+        response => Err(format!(
+            "voice-note status returned unexpected response: {response:?}"
+        )),
+    }
+}
+
+pub fn cancel_voice_note() -> Result<VoiceNoteStatus, String> {
+    match control_request(Command::RecordingVoiceNoteCancel)? {
+        Response::VoiceNote(status) => Ok(status),
+        response => Err(format!(
+            "voice-note cancellation returned unexpected response: {response:?}"
         )),
     }
 }

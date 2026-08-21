@@ -11,7 +11,7 @@ use dicta_control::{
     AnnotationTool, CleanupSummary, Command as ControlCommand, ErrorCode, Event as ControlEvent,
     EventEnvelope, ModelInstallStage, ModelState, ModelStatusSummary, ModelTier, ProjectSummary,
     ProtocolError, RecordingSelector, RecordingSummary, RequestEnvelope, Response,
-    ResponseEnvelope,
+    ResponseEnvelope, VoiceNoteState, VoiceNoteStatus,
 };
 use dicta_core::{
     storage::{is_shortcut_id, is_transcription_language, AppSettings},
@@ -27,7 +27,12 @@ use dicta_transcribe::{
     TranscriptionOutput,
 };
 use std::fmt::Write as _;
-use std::{error::Error, fmt, time::SystemTime};
+use std::{
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 /// A port operation either completed in the caller or will complete later.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,6 +99,38 @@ impl fmt::Display for PortError {
 }
 
 impl Error for PortError {}
+
+/// Returns the private per-user directory used only for short-lived voice-note
+/// capture files.
+///
+/// # Errors
+/// Returns a permission/security error when the runtime directory is not a
+/// private real directory owned by the current user.
+#[cfg(unix)]
+pub fn voice_note_directory() -> Result<PathBuf, PortError> {
+    let socket = dicta_control::socket::default_socket_path().map_err(|error| {
+        PortError::new(
+            PortErrorKind::PermissionDenied,
+            format!("could not resolve the private Dicta runtime directory: {error}"),
+        )
+    })?;
+    let directory = socket
+        .parent()
+        .ok_or_else(|| {
+            PortError::new(
+                PortErrorKind::PermissionDenied,
+                "Dicta control socket has no private runtime directory",
+            )
+        })?
+        .join("voice-notes");
+    dicta_control::socket::ensure_private_runtime_dir(&directory).map_err(|error| {
+        PortError::new(
+            PortErrorKind::PermissionDenied,
+            format!("could not prepare private voice-note storage: {error}"),
+        )
+    })?;
+    Ok(directory)
+}
 
 /// Starts and stops the platform recorder. Starting may include device discovery.
 pub trait CapturePort {
@@ -476,6 +513,22 @@ pub struct Runtime<C, T, A, S, K, I> {
     selected_tool: AnnotationTool,
     next_event_sequence: u64,
     events: Vec<ControlEvent>,
+    pending_voice_note: Option<PendingVoiceNote>,
+    cancelled_voice_inflight: Option<RecordingId>,
+    voice_note_status: VoiceNoteStatus,
+}
+
+struct PendingVoiceNote {
+    recording: RecordingFile,
+    note_id: String,
+    timestamp_seconds: f64,
+    audio_path: PathBuf,
+}
+
+impl Drop for PendingVoiceNote {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.audio_path);
+    }
 }
 
 impl<C, T, A, S, K, I> Runtime<C, T, A, S, K, I>
@@ -509,6 +562,9 @@ where
             selected_tool: AnnotationTool::Pen,
             next_event_sequence: 1,
             events: Vec::new(),
+            pending_voice_note: None,
+            cancelled_voice_inflight: None,
+            voice_note_status: VoiceNoteStatus::default(),
         }
     }
 
@@ -549,9 +605,22 @@ where
     pub fn poll_background(&mut self) -> Result<bool, RuntimeError> {
         let mut consumed = false;
         if let Some(completion) = self.transcription.poll_completion() {
-            match self.complete_transcription(completion.recording_id, completion.result) {
-                Ok(()) | Err(RuntimeError::Port(_)) => consumed = true,
-                Err(error) => return Err(error),
+            if self
+                .pending_voice_note
+                .as_ref()
+                .is_some_and(|pending| pending.recording.id == completion.recording_id)
+            {
+                self.complete_voice_note(completion.result)?;
+                consumed = true;
+            } else if self.cancelled_voice_inflight.as_ref() == Some(&completion.recording_id) {
+                self.cancelled_voice_inflight = None;
+                self.voice_note_status = VoiceNoteStatus::default();
+                consumed = true;
+            } else {
+                match self.complete_transcription(completion.recording_id, completion.result) {
+                    Ok(()) | Err(RuntimeError::Port(_)) => consumed = true,
+                    Err(error) => return Err(error),
+                }
             }
         }
         if self.transcription.poll_model_install().is_some() {
@@ -560,6 +629,8 @@ where
         if self.config.transcribe_after_recording
             && self.transcription.is_available()
             && self.controller.snapshot().state.kind() == StateKind::Idle
+            && self.pending_voice_note.is_none()
+            && self.cancelled_voice_inflight.is_none()
         {
             if let Some(candidate) = self.storage.poll_transcription_retry() {
                 consumed = true;
@@ -761,6 +832,16 @@ where
             ControlCommand::RecordingSetTimelineNotes { recording, notes } => {
                 self.set_timeline_notes(recording, notes)
             }
+            ControlCommand::RecordingVoiceNoteTranscribe {
+                recording,
+                note_id,
+                timestamp_seconds,
+                audio_path,
+            } => self.transcribe_voice_note(recording, &note_id, timestamp_seconds, &audio_path),
+            ControlCommand::RecordingVoiceNoteCancel => Ok(self.cancel_voice_note()),
+            ControlCommand::RecordingVoiceNoteStatus => {
+                Ok(Response::VoiceNote(self.voice_note_status.clone()))
+            }
             ControlCommand::RecordingDelete { recording } => self.delete_recording(recording),
             ControlCommand::RecordStart { project, note } => self.start_recording(project, note),
             ControlCommand::RecordStop => self.stop_recording(),
@@ -896,7 +977,10 @@ where
 
     fn install_model(&mut self, model: ModelTier) -> Result<Response, RuntimeError> {
         let state = self.controller.snapshot().state.kind();
-        if state != StateKind::Idle {
+        if state != StateKind::Idle
+            || self.pending_voice_note.is_some()
+            || self.cancelled_voice_inflight.is_some()
+        {
             return Err(RuntimeError::CommandConflict {
                 command: "install a transcription model",
                 state,
@@ -1104,7 +1188,10 @@ where
         selector: RecordingSelector,
     ) -> Result<Response, RuntimeError> {
         let state = self.controller.snapshot().state.kind();
-        if state != StateKind::Idle {
+        if state != StateKind::Idle
+            || self.pending_voice_note.is_some()
+            || self.cancelled_voice_inflight.is_some()
+        {
             return Err(ControllerError::InvalidTransition {
                 command: CommandKind::TranscribeRecording,
                 state,
@@ -1138,6 +1225,11 @@ where
         selector: RecordingSelector,
         mut notes: Vec<TimelineNote>,
     ) -> Result<Response, RuntimeError> {
+        if self.pending_voice_note.is_some() || self.cancelled_voice_inflight.is_some() {
+            return Err(RuntimeError::InvalidRequest(
+                "timeline notes cannot change while a voice note is processing".to_owned(),
+            ));
+        }
         let recording = self.resolve_recording(selector)?;
         validate_timeline_notes(&recording, &notes)?;
         notes.sort_by(|left, right| {
@@ -1150,6 +1242,140 @@ where
             .map(Box::new)
             .map(Response::RecordingDetails)
             .map_err(Into::into)
+    }
+
+    fn transcribe_voice_note(
+        &mut self,
+        selector: RecordingSelector,
+        note_id: &str,
+        timestamp_seconds: f64,
+        audio_path: &str,
+    ) -> Result<Response, RuntimeError> {
+        self.require_idle("transcribe a voice note")?;
+        if self.pending_voice_note.is_some() || self.cancelled_voice_inflight.is_some() {
+            return Err(RuntimeError::InvalidRequest(
+                "a voice-note job is already active".to_owned(),
+            ));
+        }
+        if !self.transcription.is_available() {
+            return Err(PortError::new(
+                PortErrorKind::Unavailable,
+                "local transcription is unavailable for voice notes",
+            )
+            .into());
+        }
+        let note_id = note_id.trim();
+        if note_id.is_empty()
+            || note_id.len() > 128
+            || note_id.chars().any(char::is_control)
+            || !timestamp_seconds.is_finite()
+            || timestamp_seconds < 0.0
+        {
+            return Err(RuntimeError::InvalidRequest(
+                "voice-note identity or timestamp is invalid".to_owned(),
+            ));
+        }
+        let recording = self.resolve_recording(selector)?;
+        if recording
+            .duration_seconds
+            .is_some_and(|duration| timestamp_seconds > duration + 1.0)
+        {
+            return Err(RuntimeError::InvalidRequest(
+                "voice-note timestamp is outside the recording".to_owned(),
+            ));
+        }
+        let audio_path = validate_voice_note_audio(Path::new(audio_path))?;
+        let mut input = recording.clone();
+        input.video_path = audio_path.to_string_lossy().into_owned();
+        let pending = PendingVoiceNote {
+            recording,
+            note_id: note_id.to_owned(),
+            timestamp_seconds,
+            audio_path,
+        };
+        self.voice_note_status = VoiceNoteStatus {
+            state: VoiceNoteState::Processing,
+            recording_id: Some(pending.recording.id.to_string()),
+            note_id: Some(pending.note_id.clone()),
+            message: "Transcribing voice note…".to_owned(),
+        };
+        match self.transcription.transcribe(&input) {
+            Ok(Completion::Ready(output)) => {
+                self.pending_voice_note = Some(pending);
+                self.complete_voice_note(Ok(output))?;
+            }
+            Ok(Completion::Pending) => self.pending_voice_note = Some(pending),
+            Err(error) => {
+                self.voice_note_status.state = VoiceNoteState::Failed;
+                self.voice_note_status.message.clone_from(&error.message);
+                drop(pending);
+                return Err(error.into());
+            }
+        }
+        Ok(Response::VoiceNote(self.voice_note_status.clone()))
+    }
+
+    fn complete_voice_note(
+        &mut self,
+        result: Result<TranscriptionOutput, PortError>,
+    ) -> Result<(), RuntimeError> {
+        let Some(pending) = self.pending_voice_note.take() else {
+            return Err(RuntimeError::InvalidRequest(
+                "voice-note completion is stale".to_owned(),
+            ));
+        };
+        match result {
+            Ok(output) if !output.transcript.trim().is_empty() => {
+                let mut notes = pending.recording.timeline_notes.clone();
+                notes.push(TimelineNote::voice(
+                    pending.note_id.clone(),
+                    pending.timestamp_seconds,
+                    output.transcript.trim(),
+                    self.clock.now(),
+                ));
+                validate_timeline_notes(&pending.recording, &notes)?;
+                notes.sort_by(|left, right| {
+                    left.timestamp_seconds
+                        .total_cmp(&right.timestamp_seconds)
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                self.storage
+                    .save_timeline_notes(&pending.recording, &notes)?;
+                self.voice_note_status = VoiceNoteStatus {
+                    state: VoiceNoteState::Complete,
+                    recording_id: Some(pending.recording.id.to_string()),
+                    note_id: Some(pending.note_id.clone()),
+                    message: "Voice note added.".to_owned(),
+                };
+                Ok(())
+            }
+            Ok(_) => {
+                self.voice_note_status.state = VoiceNoteState::Failed;
+                "Voice-note transcription was empty."
+                    .clone_into(&mut self.voice_note_status.message);
+                Ok(())
+            }
+            Err(error) => {
+                self.voice_note_status.state = VoiceNoteState::Failed;
+                self.voice_note_status.message.clone_from(&error.message);
+                Ok(())
+            }
+        }
+    }
+
+    fn cancel_voice_note(&mut self) -> Response {
+        let Some(pending) = self.pending_voice_note.take() else {
+            return Response::VoiceNote(self.voice_note_status.clone());
+        };
+        self.cancelled_voice_inflight = Some(pending.recording.id.clone());
+        self.voice_note_status = VoiceNoteStatus {
+            state: VoiceNoteState::Cancelling,
+            recording_id: Some(pending.recording.id.to_string()),
+            note_id: Some(pending.note_id.clone()),
+            message: "Cancelling voice note…".to_owned(),
+        };
+        drop(pending);
+        Response::VoiceNote(self.voice_note_status.clone())
     }
 
     fn start_retry_transcription(&mut self, recording: &RecordingFile) -> Result<(), RuntimeError> {
@@ -1214,7 +1440,10 @@ where
         note: Option<String>,
     ) -> Result<Response, RuntimeError> {
         let state = self.controller.snapshot().state.kind();
-        if state != StateKind::Idle {
+        if state != StateKind::Idle
+            || self.pending_voice_note.is_some()
+            || self.cancelled_voice_inflight.is_some()
+        {
             return Err(ControllerError::InvalidTransition {
                 command: CommandKind::StartRecording,
                 state,
@@ -1547,6 +1776,63 @@ fn recording_id_from_state(state: &AppState) -> Option<&RecordingId> {
         AppState::Failed(failure) => Some(&failure.recording_id),
         AppState::Idle => None,
     }
+}
+
+#[cfg(unix)]
+fn validate_voice_note_audio(path: &Path) -> Result<PathBuf, PortError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if !path.is_absolute() || path.extension().and_then(|value| value.to_str()) != Some("wav") {
+        return Err(PortError::new(
+            PortErrorKind::PermissionDenied,
+            "voice-note audio must be an absolute WAV path",
+        ));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        PortError::new(
+            PortErrorKind::NotFound,
+            format!("could not inspect voice-note audio: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != dicta_control::socket::effective_user_id()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.len() <= 44
+        || metadata.len() > 64 * 1024 * 1024
+    {
+        return Err(PortError::new(
+            PortErrorKind::PermissionDenied,
+            "voice-note audio is not a private, bounded regular WAV file",
+        ));
+    }
+    let expected = voice_note_directory()?.canonicalize().map_err(|error| {
+        PortError::new(
+            PortErrorKind::PermissionDenied,
+            format!("could not resolve private voice-note storage: {error}"),
+        )
+    })?;
+    let canonical = path.canonicalize().map_err(|error| {
+        PortError::new(
+            PortErrorKind::PermissionDenied,
+            format!("could not resolve voice-note audio: {error}"),
+        )
+    })?;
+    if canonical.parent() != Some(expected.as_path()) {
+        return Err(PortError::new(
+            PortErrorKind::PermissionDenied,
+            "voice-note audio escaped private runtime storage",
+        ));
+    }
+    Ok(canonical)
+}
+
+#[cfg(not(unix))]
+fn validate_voice_note_audio(_path: &Path) -> Result<PathBuf, PortError> {
+    Err(PortError::new(
+        PortErrorKind::Unavailable,
+        "voice notes require the native Linux runtime",
+    ))
 }
 
 fn status_from_snapshot(snapshot: &AppSnapshot, tool: AnnotationTool) -> StatusSnapshot {
@@ -2962,6 +3248,101 @@ mod tests {
             ResponsePayload::Failure { .. }
         ));
         assert_eq!(runtime.storage.recordings[0], before);
+    }
+
+    #[test]
+    fn voice_note_completion_persists_at_timestamp_and_cleans_audio() {
+        let mut runtime = runtime(
+            StartMode::Ready,
+            StopMode::Ready,
+            TranscriptionMode::Pending,
+            false,
+        );
+        let mut recording = catalog_recording(
+            "voice-demo",
+            "alpha",
+            1_800_000_000,
+            Some("main"),
+            TranscriptionStatus::Complete,
+        );
+        recording.duration_seconds = Some(30.0);
+        runtime.storage.recordings = vec![recording.clone()];
+        let audio = std::env::temp_dir().join(format!(
+            "dicta-runtime-voice-{}-{:?}.wav",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::write(&audio, vec![0_u8; 128]).unwrap();
+        runtime.pending_voice_note = Some(PendingVoiceNote {
+            recording: recording.clone(),
+            note_id: "voice-note-1".to_owned(),
+            timestamp_seconds: 12.5,
+            audio_path: audio.clone(),
+        });
+        runtime.voice_note_status = VoiceNoteStatus {
+            state: VoiceNoteState::Processing,
+            recording_id: Some(recording.id.to_string()),
+            note_id: Some("voice-note-1".to_owned()),
+            message: "processing".to_owned(),
+        };
+        runtime.transcription.completion = Some(TranscriptionCompletion {
+            recording_id: recording.id,
+            result: Ok(transcript()),
+        });
+
+        assert!(runtime.poll_background().unwrap());
+        assert!(!audio.exists());
+        let note = &runtime.storage.recordings[0].timeline_notes[0];
+        assert_eq!(note.id, "voice-note-1");
+        assert!((note.timestamp_seconds - 12.5).abs() < f64::EPSILON);
+        assert_eq!(note.source, "voice");
+        assert_eq!(note.text, "fixed the overflow");
+        assert_eq!(runtime.voice_note_status.state, VoiceNoteState::Complete);
+    }
+
+    #[test]
+    fn cancelled_voice_note_rejects_stale_completion_without_metadata_mutation() {
+        let mut runtime = runtime(
+            StartMode::Ready,
+            StopMode::Ready,
+            TranscriptionMode::Pending,
+            false,
+        );
+        let recording = catalog_recording(
+            "voice-cancel",
+            "alpha",
+            1_800_000_000,
+            Some("main"),
+            TranscriptionStatus::Complete,
+        );
+        runtime.storage.recordings = vec![recording.clone()];
+        let audio = std::env::temp_dir().join(format!(
+            "dicta-runtime-voice-cancel-{}-{:?}.wav",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::write(&audio, vec![0_u8; 128]).unwrap();
+        runtime.pending_voice_note = Some(PendingVoiceNote {
+            recording: recording.clone(),
+            note_id: "voice-note-cancelled".to_owned(),
+            timestamp_seconds: 3.0,
+            audio_path: audio.clone(),
+        });
+        runtime.voice_note_status.state = VoiceNoteState::Processing;
+
+        let cancelled = runtime.handle(request(ControlCommand::RecordingVoiceNoteCancel));
+        let Response::VoiceNote(status) = response(&cancelled) else {
+            panic!("voice cancellation returned another response type");
+        };
+        assert_eq!(status.state, VoiceNoteState::Cancelling);
+        assert!(!audio.exists());
+        runtime.transcription.completion = Some(TranscriptionCompletion {
+            recording_id: recording.id,
+            result: Ok(transcript()),
+        });
+        assert!(runtime.poll_background().unwrap());
+        assert!(runtime.storage.recordings[0].timeline_notes.is_empty());
+        assert_eq!(runtime.voice_note_status.state, VoiceNoteState::Idle);
     }
 
     #[test]

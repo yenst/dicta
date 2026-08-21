@@ -112,6 +112,23 @@ pub struct TimelineNote {
 }
 
 impl TimelineNote {
+    #[must_use]
+    pub fn voice(
+        id: impl Into<String>,
+        timestamp_seconds: f64,
+        text: impl Into<String>,
+        created_at: std::time::SystemTime,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            timestamp_seconds,
+            text: text.into(),
+            created_at: DateTime::<Utc>::from(created_at),
+            source: "voice".to_owned(),
+            extra: Map::new(),
+        }
+    }
+
     pub fn is_valid(&self) -> bool {
         !self.id.trim().is_empty()
             && self.timestamp_seconds.is_finite()

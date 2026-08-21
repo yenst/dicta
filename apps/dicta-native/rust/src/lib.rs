@@ -1,6 +1,7 @@
 //! C ABI for the one-process Dicta native runtime host.
 
 mod host;
+mod voice_note;
 
 use host::{HostConfig, OverlayCallback};
 use std::{ffi::c_void, slice, str};
@@ -13,6 +14,8 @@ pub const RECORDING_DETAIL_MAX_BYTES: usize = 1024 * 1024;
 pub const RECORDING_CONTEXT_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const TIMELINE_NOTES_MAX_BYTES: usize = 1024 * 1024;
 pub const CLEANUP_SUMMARY_MAX_BYTES: usize = 64 * 1024;
+pub const CODEX_MCP_STATUS_MAX_BYTES: usize = 16 * 1024;
+pub const VOICE_NOTE_STATUS_MAX_BYTES: usize = 16 * 1024;
 
 #[repr(C)]
 pub struct DictaNativeHostConfig {
@@ -112,6 +115,7 @@ pub extern "C" fn dicta_native_host_request_stop() {
 /// Requests shutdown and joins the service thread.
 #[no_mangle]
 pub extern "C" fn dicta_native_host_join() -> i32 {
+    voice_note::shutdown();
     host::join().map_or_else(
         |message| {
             host::set_detached_error(message);
@@ -139,6 +143,7 @@ pub extern "C" fn dicta_native_host_stroke_count() -> u64 {
 /// containing UTF-8. Notes longer than 4096 bytes are rejected.
 #[no_mangle]
 pub unsafe extern "C" fn dicta_native_host_record_start(note: *const u8, note_len: usize) -> i32 {
+    voice_note::shutdown();
     if note_len > 4096 {
         host::set_detached_error("recording note exceeds 4096 UTF-8 bytes".to_owned());
         return -1;
@@ -162,6 +167,80 @@ pub unsafe extern "C" fn dicta_native_host_record_start(note: *const u8, note_le
             -2
         }
     }
+}
+
+/// Starts private, bounded microphone capture for a timestamped viewer note.
+///
+/// # Safety
+/// `recording_id` must expose `recording_id_len` readable UTF-8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_voice_note_start(
+    recording_id: *const u8,
+    recording_id_len: usize,
+    timestamp_seconds: f64,
+) -> i32 {
+    if recording_id_len == 0 || recording_id_len > 256 || recording_id.is_null() {
+        host::set_detached_error("voice-note recording ID is invalid".to_owned());
+        return -1;
+    }
+    // SAFETY: The caller contract establishes the readable ID range.
+    let recording_id = match unsafe { utf8_field(recording_id, recording_id_len, "recording ID") } {
+        Ok(value) => value,
+        Err(message) => {
+            host::set_detached_error(message);
+            return -1;
+        }
+    };
+    match voice_note::start(recording_id, timestamp_seconds) {
+        Ok(()) => {
+            host::set_detached_error(String::new());
+            0
+        }
+        Err(message) => {
+            host::set_detached_error(message);
+            -2
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dicta_native_voice_note_stop() -> i32 {
+    match voice_note::stop() {
+        Ok(()) => {
+            host::set_detached_error(String::new());
+            0
+        }
+        Err(message) => {
+            host::set_detached_error(message);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dicta_native_voice_note_cancel() -> i32 {
+    match voice_note::cancel() {
+        Ok(()) => {
+            host::set_detached_error(String::new());
+            0
+        }
+        Err(message) => {
+            host::set_detached_error(message);
+            -1
+        }
+    }
+}
+
+/// Writes the current microphone/transcription state as bounded JSON.
+///
+/// # Safety
+/// `output` must expose `capacity` writable bytes no larger than
+/// [`VOICE_NOTE_STATUS_MAX_BYTES`].
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_voice_note_status(output: *mut u8, capacity: usize) -> usize {
+    let snapshot = voice_note::snapshot();
+    // SAFETY: This function forwards the caller's writable-buffer contract.
+    unsafe { write_json_payload(&snapshot, output, capacity, VOICE_NOTE_STATUS_MAX_BYTES) }
 }
 
 /// Stops the active recording through the typed local control protocol.
@@ -285,6 +364,49 @@ pub extern "C" fn dicta_native_host_model_install_quality() -> i32 {
             -1
         }
     }
+}
+
+/// Reads Codex's scoped `dicta` MCP registration and returns a typed status.
+/// This path initializes neither Qt, capture, nor Whisper.
+///
+/// # Safety
+/// `output` must expose `capacity` writable bytes no larger than
+/// [`CODEX_MCP_STATUS_MAX_BYTES`].
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_codex_mcp_status(output: *mut u8, capacity: usize) -> usize {
+    let status = dicta_linux::CodexMcpIntegration::discover().status();
+    // SAFETY: This function forwards the caller's writable-buffer contract.
+    unsafe { write_json_payload(&status, output, capacity, CODEX_MCP_STATUS_MAX_BYTES) }
+}
+
+/// Applies a scoped Codex MCP action: 1 connects a missing registration and 2
+/// restarts/replaces only the `dicta` registration with rollback.
+///
+/// # Safety
+/// `output` must expose `capacity` writable bytes no larger than
+/// [`CODEX_MCP_STATUS_MAX_BYTES`].
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_codex_mcp_action(
+    action: u32,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    let integration = dicta_linux::CodexMcpIntegration::discover();
+    let result = match action {
+        1 => integration.connect(),
+        2 => integration.restart(),
+        _ => Err("Codex MCP action is invalid".to_owned()),
+    };
+    let status = match result {
+        Ok(status) => status,
+        Err(message) => {
+            host::set_detached_error(message);
+            return 0;
+        }
+    };
+    host::set_detached_error(String::new());
+    // SAFETY: This function forwards the caller's writable-buffer contract.
+    unsafe { write_json_payload(&status, output, capacity, CODEX_MCP_STATUS_MAX_BYTES) }
 }
 
 /// Writes a bounded JSON snapshot for the Qt recording dashboard.

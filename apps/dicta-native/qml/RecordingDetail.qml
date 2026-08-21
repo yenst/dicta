@@ -646,6 +646,68 @@ Item {
                             }
                         }
                     }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 24 * root.dictaTheme.spacingScale
+                        Layout.rightMargin: 26 * root.dictaTheme.spacingScale
+                        Layout.bottomMargin: 10 * root.dictaTheme.spacingScale
+                        Layout.preferredHeight: 54 * root.dictaTheme.spacingScale
+                        color: root.dictaTheme.darkBackground
+                        border.width: 1
+                        border.color: root.bridge.voiceNoteStatus.state === "recording"
+                            ? root.dictaTheme.red : root.dictaTheme.muted
+                        radius: 3 * root.dictaTheme.spacingScale
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12 * root.dictaTheme.spacingScale
+                            anchors.rightMargin: 8 * root.dictaTheme.spacingScale
+                            spacing: 8 * root.dictaTheme.spacingScale
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.bridge.voiceNoteStatus.message
+                                    || "Record a spoken note at the playback cursor"
+                                color: root.bridge.voiceNoteStatus.state === "failed"
+                                    ? root.dictaTheme.red : root.dictaTheme.darkForeground
+                                font.family: root.dictaTheme.fontFamily
+                                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
+                                elide: Text.ElideRight
+                            }
+                            FlatButton {
+                                objectName: "voiceNoteRecord"
+                                visible: root.bridge.voiceNoteStatus.state !== "recording"
+                                    && root.bridge.voiceNoteStatus.state !== "processing"
+                                    && root.bridge.voiceNoteStatus.state !== "cancelling"
+                                dictaTheme: root.dictaTheme
+                                text: "RECORD VOICE"
+                                iconName: "microphone"
+                                enabled: root.bridge.runtimePhase === "idle"
+                                onClicked: {
+                                    if (playerLoader.active && playerLoader.item)
+                                        playerLoader.item.pause()
+                                    root.bridge.startVoiceNote(root.playbackPosition())
+                                }
+                            }
+                            FlatButton {
+                                objectName: "voiceNoteStop"
+                                visible: root.bridge.voiceNoteStatus.state === "recording"
+                                dictaTheme: root.dictaTheme
+                                text: "STOP & TRANSCRIBE"
+                                selected: true
+                                onClicked: root.bridge.stopVoiceNote()
+                            }
+                            FlatButton {
+                                objectName: "voiceNoteCancel"
+                                visible: root.bridge.voiceNoteStatus.state === "recording"
+                                    || root.bridge.voiceNoteStatus.state === "processing"
+                                    || root.bridge.voiceNoteStatus.state === "cancelling"
+                                dictaTheme: root.dictaTheme
+                                text: "CANCEL"
+                                quiet: true
+                                onClicked: root.bridge.cancelVoiceNote()
+                            }
+                        }
+                    }
                     Repeater {
                         model: root.recording.timeline_notes || []
                         delegate: RowLayout {

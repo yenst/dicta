@@ -25,6 +25,8 @@ class DashboardBridge final : public QObject
     Q_PROPERTY(QVariantMap currentProject MEMBER currentProject NOTIFY changed)
     Q_PROPERTY(QVariantMap modelStatus MEMBER modelStatus NOTIFY changed)
     Q_PROPERTY(QVariantMap settings MEMBER settings NOTIFY changed)
+    Q_PROPERTY(QVariantMap codexMcp MEMBER codexMcp NOTIFY changed)
+    Q_PROPERTY(QVariantMap voiceNoteStatus MEMBER voiceNoteStatus NOTIFY selectedRecordingChanged)
     Q_PROPERTY(QString settingsMessage MEMBER settingsMessage NOTIFY changed)
     Q_PROPERTY(QVariantList recentRecordings MEMBER recentRecordings NOTIFY changed)
     Q_PROPERTY(QString uiError MEMBER uiError NOTIFY changed)
@@ -53,6 +55,13 @@ public:
         {QStringLiteral("transcription_language"), QStringLiteral("auto")},
         {QStringLiteral("general_path"), QVariant()},
     };
+    QVariantMap codexMcp {
+        {QStringLiteral("state"), QStringLiteral("disconnected")},
+        {QStringLiteral("codex_path"), QStringLiteral("/usr/bin/codex")},
+        {QStringLiteral("mcp_path"), QStringLiteral("/usr/lib/Dicta/dicta-mcp")},
+        {QStringLiteral("message"), QStringLiteral("Dicta is not registered with Codex.")},
+    };
+    QVariantMap voiceNoteStatus {{QStringLiteral("state"), QStringLiteral("idle")}};
     QString settingsMessage;
     QVariantList recentRecordings;
     QString uiError;
@@ -84,6 +93,12 @@ public:
     int settingCalls = 0;
     int cleanupCalls = 0;
     int installModelCalls = 0;
+    int codexStatusCalls = 0;
+    int codexConnectCalls = 0;
+    int codexRestartCalls = 0;
+    int voiceStartCalls = 0;
+    int voiceStopCalls = 0;
+    int voiceCancelCalls = 0;
     QString requestedAnnotationTool;
 
     Q_INVOKABLE bool startRecording(const QString &note)
@@ -321,6 +336,57 @@ public:
         return true;
     }
 
+    Q_INVOKABLE bool refreshCodexMcp()
+    {
+        ++codexStatusCalls;
+        return true;
+    }
+
+    Q_INVOKABLE bool connectCodexMcp()
+    {
+        ++codexConnectCalls;
+        codexMcp.insert(QStringLiteral("state"), QStringLiteral("connected"));
+        emit changed();
+        return true;
+    }
+
+    Q_INVOKABLE bool restartCodexMcp()
+    {
+        ++codexRestartCalls;
+        return true;
+    }
+
+    Q_INVOKABLE bool startVoiceNote(const double timestampSeconds)
+    {
+        Q_UNUSED(timestampSeconds)
+        ++voiceStartCalls;
+        voiceNoteStatus = QVariantMap {
+            {QStringLiteral("state"), QStringLiteral("recording")},
+            {QStringLiteral("message"), QStringLiteral("Listening…")},
+        };
+        emit selectedRecordingChanged();
+        return true;
+    }
+
+    Q_INVOKABLE bool stopVoiceNote()
+    {
+        ++voiceStopCalls;
+        voiceNoteStatus = QVariantMap {
+            {QStringLiteral("state"), QStringLiteral("processing")},
+            {QStringLiteral("message"), QStringLiteral("Transcribing voice note…")},
+        };
+        emit selectedRecordingChanged();
+        return true;
+    }
+
+    Q_INVOKABLE bool cancelVoiceNote()
+    {
+        ++voiceCancelCalls;
+        voiceNoteStatus = QVariantMap {{QStringLiteral("state"), QStringLiteral("idle")}};
+        emit selectedRecordingChanged();
+        return true;
+    }
+
 signals:
     void changed();
     void dashboardChanged();
@@ -545,9 +611,15 @@ void DashboardQmlTest::timelineNotesUseThePlaybackCursorAndTypedBridge()
     QObject *detail = dashboard->findChild<QObject *>(QStringLiteral("recordingDetailPage"));
     QObject *field = dashboard->findChild<QObject *>(QStringLiteral("timelineNoteField"));
     QObject *add = dashboard->findChild<QObject *>(QStringLiteral("addTimelineNote"));
+    QObject *voiceRecord = dashboard->findChild<QObject *>(QStringLiteral("voiceNoteRecord"));
+    QObject *voiceStop = dashboard->findChild<QObject *>(QStringLiteral("voiceNoteStop"));
+    QObject *voiceCancel = dashboard->findChild<QObject *>(QStringLiteral("voiceNoteCancel"));
     QVERIFY(detail != nullptr);
     QVERIFY(field != nullptr);
     QVERIFY(add != nullptr);
+    QVERIFY(voiceRecord != nullptr);
+    QVERIFY(voiceStop != nullptr);
+    QVERIFY(voiceCancel != nullptr);
     detail->setProperty("currentTab", 2);
     field->setProperty("text", QStringLiteral("Check this transition"));
     QVERIFY(QMetaObject::invokeMethod(add, "clicked"));
@@ -559,6 +631,12 @@ void DashboardQmlTest::timelineNotesUseThePlaybackCursorAndTypedBridge()
         bridge.selectedRecording.value(QStringLiteral("timeline_notes")).toList().size(),
         1
     );
+    QVERIFY(QMetaObject::invokeMethod(voiceRecord, "clicked"));
+    QCOMPARE(bridge.voiceStartCalls, 1);
+    QVERIFY(QMetaObject::invokeMethod(voiceStop, "clicked"));
+    QCOMPARE(bridge.voiceStopCalls, 1);
+    QVERIFY(QMetaObject::invokeMethod(voiceCancel, "clicked"));
+    QCOMPARE(bridge.voiceCancelCalls, 1);
 }
 
 void DashboardQmlTest::narrowRecordingAnnotationControlsAreKeyboardAccessible()
@@ -660,6 +738,8 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
     QObject *generalApply = nullptr;
     QObject *cleanupNow = nullptr;
     QObject *installModel = nullptr;
+    QObject *connectCodex = nullptr;
+    QObject *restartCodex = nullptr;
     QTRY_VERIFY((branch = dashboard->findChild<QObject *>(
         QStringLiteral("branchLockingToggle"))) != nullptr);
     QTRY_VERIFY((cleanup = dashboard->findChild<QObject *>(
@@ -672,6 +752,10 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
         QStringLiteral("cleanupNow"))) != nullptr);
     QTRY_VERIFY((installModel = dashboard->findChild<QObject *>(
         QStringLiteral("installQualityModel"))) != nullptr);
+    QTRY_VERIFY((connectCodex = dashboard->findChild<QObject *>(
+        QStringLiteral("connectCodexMcp"))) != nullptr);
+    QTRY_VERIFY((restartCodex = dashboard->findChild<QObject *>(
+        QStringLiteral("restartCodexMcp"))) != nullptr);
 
     QVERIFY(QMetaObject::invokeMethod(
         dashboard.get(),
@@ -689,10 +773,15 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
     QVERIFY(QMetaObject::invokeMethod(generalApply, "clicked"));
     QVERIFY(QMetaObject::invokeMethod(cleanupNow, "clicked"));
     QVERIFY(QMetaObject::invokeMethod(installModel, "clicked"));
+    QVERIFY(QMetaObject::invokeMethod(connectCodex, "clicked"));
+    QVERIFY(QMetaObject::invokeMethod(restartCodex, "clicked"));
 
     QCOMPARE(bridge.settingCalls, 5);
     QCOMPARE(bridge.cleanupCalls, 1);
     QCOMPARE(bridge.installModelCalls, 1);
+    QVERIFY(bridge.codexStatusCalls >= 1);
+    QCOMPARE(bridge.codexConnectCalls, 1);
+    QCOMPARE(bridge.codexRestartCalls, 1);
     QCOMPARE(bridge.modelStatus.value(QStringLiteral("quality_state")).toString(),
              QStringLiteral("installing"));
     QCOMPARE(bridge.settingsMessage, QStringLiteral("Removed 2 merged videos."));

@@ -68,6 +68,11 @@ ApplicationWindow {
         return bridge.installQualityModel()
     }
 
+    onSettingsOpenChanged: {
+        if (settingsOpen)
+            bridge.refreshCodexMcp()
+    }
+
     function ensureWideSelection() {
         if (!autoOpenLatest || !wideLayout || settingsOpen || showingDetail || autoSelecting)
             return
@@ -600,6 +605,66 @@ ApplicationWindow {
                                     font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
                                     elide: Text.ElideRight
                                 }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 208 * root.dictaTheme.spacingScale
+                        radius: 3 * root.dictaTheme.spacingScale
+                        color: root.dictaTheme.darkBackground
+                        border.width: 1
+                        border.color: root.dictaTheme.muted
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 16 * root.dictaTheme.spacingScale
+                            spacing: 8 * root.dictaTheme.spacingScale
+                            Text {
+                                text: "CODEX MCP"
+                                color: root.dictaTheme.darkForeground
+                                font.family: root.dictaTheme.fontFamily
+                                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.bridge.codexMcp.mcp_path
+                                    || "Packaged dicta-mcp was not found"
+                                color: root.dictaTheme.brightForeground
+                                font.family: root.dictaTheme.fontFamily
+                                font.pixelSize: root.dictaTheme.baseFontSize
+                                elide: Text.ElideMiddle
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.bridge.codexMcp.message || "Checking Codex…"
+                                color: root.bridge.codexMcp.state === "connected"
+                                    ? root.dictaTheme.accent : root.dictaTheme.darkForeground
+                                font.family: root.dictaTheme.fontFamily
+                                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
+                                wrapMode: Text.Wrap
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                FlatButton {
+                                    objectName: "connectCodexMcp"
+                                    dictaTheme: root.dictaTheme
+                                    text: root.bridge.codexMcp.state === "connected"
+                                        ? "CONNECTED" : "CONNECT CODEX"
+                                    selected: root.bridge.codexMcp.state === "connected"
+                                    enabled: root.bridge.codexMcp.state === "disconnected"
+                                    onClicked: root.bridge.connectCodexMcp()
+                                }
+                                FlatButton {
+                                    objectName: "restartCodexMcp"
+                                    dictaTheme: root.dictaTheme
+                                    text: "RESTART DICTA MCP"
+                                    enabled: Boolean(root.bridge.codexMcp.codex_path)
+                                        && Boolean(root.bridge.codexMcp.mcp_path)
+                                    onClicked: root.bridge.restartCodexMcp()
+                                }
+                                Item { Layout.fillWidth: true }
                             }
                         }
                     }

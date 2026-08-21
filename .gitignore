@@ -1,13 +1,6 @@
-# macOS
-.DS_Store
-
 # Dependencies and build output
-node_modules/
-dist/
 target/
-src-tauri/target/
 mcp/target/
-src-tauri/gen/schemas/
 
 # Local configuration and logs
 .env

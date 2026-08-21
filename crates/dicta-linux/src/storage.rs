@@ -1561,16 +1561,13 @@ fn prepare_linked_project(
 }
 
 fn exclude_dicta_from_git(source: &Path) -> Result<(), PortError> {
-    let git_directory = source.join(".git");
-    let metadata = fs::symlink_metadata(&git_directory)
-        .map_err(|error| io_port_error("inspect local Git metadata", &error))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(PortError::new(
+    let administration = dicta_core::git::admin_paths(source).map_err(|error| {
+        PortError::new(
             PortErrorKind::PermissionDenied,
-            "local .git metadata must be a real directory",
-        ));
-    }
-    let info = git_directory.join("info");
+            format!("Git administration validation failed: {error}"),
+        )
+    })?;
+    let info = administration.common.join("info");
     if is_symlink(&info) {
         return Err(PortError::new(
             PortErrorKind::PermissionDenied,

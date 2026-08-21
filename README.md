@@ -8,7 +8,7 @@ and timestamped review notes into one project-scoped packet.
 The current product path is Rust first: a small Qt Quick host owns the native
 window and GPU annotation surface, while Rust owns the state machine, capture,
 storage, transcription, Unix control socket, CLI, and MCP server. It does not
-use a WebView, Node.js runtime, Tauri process, or async executor.
+use a WebView or general async executor.
 
 ## Workflow
 
@@ -85,7 +85,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ctest --test-dir apps/dicta-native/build --output-on-failure
 cmake --build apps/dicta-native/build --target dicta-native_qmllint
-node scripts/check-versions.mjs
+bash scripts/check-versions.sh
 ```
 
 Unix-socket and live Hyprland tests need an environment that permits private
@@ -163,17 +163,14 @@ non-symlinked recording. No deleted temporary path is exposed.
 Build the system-Qt native archive on the target Linux architecture:
 
 ```sh
-npm run bundle:native-linux
+bash scripts/package-native-linux.sh
 ```
 
 The reproducible archive contains the Qt/Rust host, CLI, MCP server, compact
 model, desktop entry, icons, Omarchy integration, and documentation. It rejects
-WebKit, JavaScriptCore, Node, and bundled shared libraries during packaging.
+web-runtime dependencies and bundled shared libraries during packaging.
 
 ## Migration status
 
-The former Tauri/macOS sources remain in the repository only while the native
-feature-parity ledger is being closed and old data contracts are exercised by
-migration tests. They are not the recommended build or release path. Those
-sources will be removed only after every native row has its required live and
-automated evidence.
+Dicta is Linux-native. The release, CI, desktop launcher, CLI, MCP helper, and
+Omarchy integrations all build from the Rust/Qt implementation.

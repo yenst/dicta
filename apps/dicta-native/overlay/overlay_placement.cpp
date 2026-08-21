@@ -9,7 +9,7 @@ class QtToplevelPlacement final : public OverlayPlacementPort
 public:
     [[nodiscard]] QString mode() const override
     {
-        return QStringLiteral("best_effort_qt_toplevel");
+        return QStringLiteral("hyprland_bypass_toplevel");
     }
 
     [[nodiscard]] bool guaranteesLayerShell() const override
@@ -27,6 +27,13 @@ public:
         }
 
         window.hide();
+        window.setFlags(
+            window.flags()
+            | Qt::FramelessWindowHint
+            | Qt::Tool
+            | Qt::BypassWindowManagerHint
+            | Qt::WindowStaysOnTopHint
+        );
         window.setScreen(&screen);
         window.setGeometry(screen.geometry());
         window.showFullScreen();

@@ -13,6 +13,7 @@ dicta-core = { path = "../dicta-core" }
 dicta-engine = { path = "../dicta-engine" }
 dicta-runtime = { path = "../dicta-runtime" }
 dicta-transcribe = { path = "../dicta-transcribe" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [lints.rust]

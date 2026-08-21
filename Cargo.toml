@@ -11,7 +11,7 @@ members = [
     "crates/dicta-runtime",
     "crates/dicta-transcribe",
 ]
-exclude = ["mcp", "src-tauri"]
+exclude = ["mcp"]
 resolver = "2"
 
 [workspace.dependencies]
