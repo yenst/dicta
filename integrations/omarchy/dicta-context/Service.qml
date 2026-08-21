@@ -235,6 +235,10 @@ Item {
       return
     }
     actionStatus = "RECORDING UPDATED"
+    Quickshell.execDetached([
+      "notify-send", "--app-name=Dicta", "Dicta",
+      recordingActive ? "Recording stopped" : "Recording started"
+    ])
     actionClear.restart()
     refresh(selectedProjectId)
   }
@@ -260,6 +264,9 @@ Item {
       copiedContextId = pendingContextId
       actionStatus = "CONTEXT COPIED"
       actionClear.restart()
+      Quickshell.execDetached([
+        "notify-send", "--app-name=Dicta", "Dicta", "Context copied"
+      ])
     } else {
       copiedContextId = ""
       actionStatus = ""

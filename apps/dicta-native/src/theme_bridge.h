@@ -9,6 +9,7 @@ class ThemeBridge final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QString name READ name NOTIFY themeChanged)
+    Q_PROPERTY(QString appearance READ appearance NOTIFY themeChanged)
     Q_PROPERTY(QString mode READ mode NOTIFY themeChanged)
     Q_PROPERTY(QString fontFamily READ fontFamily NOTIFY themeChanged)
     Q_PROPERTY(int baseFontSize READ baseFontSize NOTIFY themeChanged)
@@ -40,6 +41,7 @@ public:
     );
 
     [[nodiscard]] QString name() const;
+    [[nodiscard]] QString appearance() const;
     [[nodiscard]] QString mode() const;
     [[nodiscard]] QString fontFamily() const;
     [[nodiscard]] int baseFontSize() const;
@@ -64,6 +66,7 @@ public:
     [[nodiscard]] QColor magenta() const;
 
     Q_INVOKABLE bool reload();
+    Q_INVOKABLE bool setAppearance(const QString &appearance);
 
 signals:
     void themeChanged();
@@ -72,12 +75,14 @@ private:
     [[nodiscard]] QString themePath(const QString &fileName) const;
     [[nodiscard]] QString userShellPath() const;
     [[nodiscard]] QString fontConfigPath() const;
+    [[nodiscard]] QString appearancePath() const;
 
     QString m_stateHome;
     QString m_configHome;
     QByteArray m_snapshot;
     QTimer m_reloadTimer;
     QString m_name = QStringLiteral("default");
+    QString m_appearance = QStringLiteral("system");
     QString m_mode = QStringLiteral("dark");
     QString m_fontFamily = QStringLiteral("monospace");
     int m_baseFontSize = 12;

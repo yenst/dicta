@@ -24,6 +24,7 @@ ApplicationWindow {
     property int navigationColumn: 1
     property int transcriptionElapsedSeconds: 0
     property string previousRuntimePhase: ""
+    property bool branchCopied: false
 
     width: 1440
     height: 900
@@ -74,6 +75,22 @@ ApplicationWindow {
         return bridge.installQualityModel()
     }
 
+    function updateAppearance(appearance) {
+        var changed = dictaTheme.setAppearance(appearance)
+        if (changed)
+            bridge.showToast("Appearance changed")
+        return changed
+    }
+
+    function copyMcpConfig(provider) {
+        var command = String(bridge.codexMcp.mcp_path || "dicta-mcp")
+        var config = JSON.stringify({mcpServers: {dicta: {command: command}}}, null, 2)
+        if (!bridge.copyText(config))
+            return false
+        bridge.showToast(provider + " MCP config copied")
+        return true
+    }
+
     function settingsTitle(section) {
         if (section === "connections") return "MCP connections"
         if (section === "shortcuts") return "Shortcuts"
@@ -87,7 +104,7 @@ ApplicationWindow {
         if (section === "shortcuts") return "Choose the global shortcut that starts or stops recording."
         if (section === "transcription") return "Manage the local speech model and transcript language."
         if (section === "storage") return "Control branch scope, paths, and merged-video cleanup."
-        return "Dicta follows your active Omarchy theme."
+        return "Follow the desktop theme or choose a portable Dicta appearance."
     }
 
     onSettingsOpenChanged: {
@@ -228,6 +245,13 @@ ApplicationWindow {
         repeat: true
         running: root.bridge.runtimePhase === "transcribing"
         onTriggered: root.transcriptionElapsedSeconds += 1
+    }
+
+    Timer {
+        id: branchCopiedTimer
+        interval: 1600
+        repeat: false
+        onTriggered: root.branchCopied = false
     }
 
     Component.onCompleted: {
@@ -438,10 +462,16 @@ ApplicationWindow {
                                 visible: Boolean(root.bridge.currentProject.branch)
                                 dictaTheme: root.dictaTheme
                                 text: root.bridge.currentProject.branch || ""
-                                iconName: "branch"
+                                iconName: root.branchCopied ? "check" : "branch"
                                 selected: true
                                 toolTip: "Copy Git branch"
-                                onClicked: root.bridge.copyText(root.bridge.currentProject.branch || "")
+                                onClicked: {
+                                    if (!root.bridge.copyText(root.bridge.currentProject.branch || ""))
+                                        return
+                                    root.branchCopied = true
+                                    branchCopiedTimer.restart()
+                                    root.bridge.showToast("Git branch copied")
+                                }
                             }
                             Item { Layout.fillWidth: true }
                         }
@@ -776,7 +806,7 @@ ApplicationWindow {
                         objectName: "settingsAppearanceCard"
                         visible: root.settingsSection === "appearance"
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 168 * root.dictaTheme.spacingScale
+                        Layout.preferredHeight: 218 * root.dictaTheme.spacingScale
                         radius: 3 * root.dictaTheme.spacingScale
                         color: root.dictaTheme.darkBackground
                         border.width: 1
@@ -795,7 +825,9 @@ ApplicationWindow {
                             }
                             Text {
                                 width: parent.width
-                                text: "Follows Omarchy · " + root.dictaTheme.name
+                                text: root.dictaTheme.appearance === "system"
+                                    ? "Follows desktop · " + root.dictaTheme.name
+                                    : root.dictaTheme.name
                                 color: root.dictaTheme.brightForeground
                                 font.family: root.dictaTheme.fontFamily
                                 font.pixelSize: root.dictaTheme.baseFontSize + 1
@@ -805,11 +837,32 @@ ApplicationWindow {
                                 width: parent.width
                                 text: root.dictaTheme.fontFamily + " · "
                                     + root.dictaTheme.baseFontSize + " px\n"
-                                    + "colors.toml and shell.toml reload live."
+                                    + (root.dictaTheme.appearance === "system"
+                                        ? "Desktop theme changes reload live."
+                                        : "Built-in themes work on any Linux desktop.")
                                 color: root.dictaTheme.darkForeground
                                 font.family: root.dictaTheme.fontFamily
                                 font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
                                 wrapMode: Text.Wrap
+                            }
+                            Flow {
+                                width: parent.width
+                                spacing: 6 * root.dictaTheme.spacingScale
+                                Repeater {
+                                    model: [
+                                        {id: "system", label: "DESKTOP"},
+                                        {id: "dark", label: "DICTA DARK"},
+                                        {id: "light", label: "DICTA LIGHT"}
+                                    ]
+                                    FlatButton {
+                                        required property var modelData
+                                        objectName: "appearance-" + modelData.id
+                                        dictaTheme: root.dictaTheme
+                                        text: modelData.label
+                                        selected: root.dictaTheme.appearance === modelData.id
+                                        onClicked: root.updateAppearance(modelData.id)
+                                    }
+                                }
                             }
                         }
                     }
@@ -827,60 +880,6 @@ ApplicationWindow {
                             anchors.fill: parent
                             anchors.margins: 16 * root.dictaTheme.spacingScale
                             spacing: 8 * root.dictaTheme.spacingScale
-                            Text {
-                                text: "MODELS"
-                                color: root.dictaTheme.darkForeground
-                                font.family: root.dictaTheme.fontFamily
-                                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
-                                font.weight: Font.DemiBold
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 66 * root.dictaTheme.spacingScale
-                                radius: 3 * root.dictaTheme.spacingScale
-                                color: root.dictaTheme.background
-                                border.width: 1
-                                border.color: root.dictaTheme.muted
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 12 * root.dictaTheme.spacingScale
-                                    spacing: 10 * root.dictaTheme.spacingScale
-                                    ThemeIcon {
-                                        Layout.preferredWidth: 22 * root.dictaTheme.spacingScale
-                                        Layout.preferredHeight: width
-                                        iconName: "transcription"
-                                        iconColor: root.dictaTheme.darkForeground
-                                        iconSize: Math.round(width)
-                                    }
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 1
-                                        Text {
-                                            text: "Compact  ·  Included"
-                                            color: root.dictaTheme.brightForeground
-                                            font.family: root.dictaTheme.fontFamily
-                                            font.pixelSize: root.dictaTheme.baseFontSize
-                                            font.weight: Font.DemiBold
-                                        }
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: "Fast offline fallback for rough transcripts."
-                                            color: root.dictaTheme.darkForeground
-                                            font.family: root.dictaTheme.fontFamily
-                                            font.pixelSize: Math.max(9,
-                                                root.dictaTheme.baseFontSize - 1)
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-                                    Text {
-                                        text: "57 MB"
-                                        color: root.dictaTheme.darkForeground
-                                        font.family: root.dictaTheme.fontFamily
-                                        font.pixelSize: Math.max(9,
-                                            root.dictaTheme.baseFontSize - 1)
-                                    }
-                                }
-                            }
                             Text {
                                 text: "CURRENT ENGINE"
                                 color: root.dictaTheme.darkForeground
@@ -910,14 +909,12 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         spacing: 1
                                         Text {
-                                            Layout.fillWidth: true
                                             text: root.bridge.modelStatus.active_model
                                                 || "Compact fallback"
                                             color: root.dictaTheme.brightForeground
                                             font.family: root.dictaTheme.fontFamily
                                             font.pixelSize: root.dictaTheme.baseFontSize
                                             font.weight: Font.DemiBold
-                                            elide: Text.ElideRight
                                         }
                                         Text {
                                             Layout.fillWidth: true
@@ -926,7 +923,7 @@ ApplicationWindow {
                                             font.family: root.dictaTheme.fontFamily
                                             font.pixelSize: Math.max(9,
                                                 root.dictaTheme.baseFontSize - 1)
-                                            elide: Text.ElideMiddle
+                                            elide: Text.ElideRight
                                         }
                                     }
                                     FlatButton {
@@ -942,6 +939,62 @@ ApplicationWindow {
                                             && root.bridge.modelStatus.quality_state !== "ready"
                                             && root.bridge.modelStatus.quality_state !== "installing"
                                         onClicked: root.installQualityModel()
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "AVAILABLE MODELS"
+                                color: root.dictaTheme.darkForeground
+                                font.family: root.dictaTheme.fontFamily
+                                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
+                                font.weight: Font.DemiBold
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 66 * root.dictaTheme.spacingScale
+                                radius: 3 * root.dictaTheme.spacingScale
+                                color: root.dictaTheme.background
+                                border.width: 1
+                                border.color: root.dictaTheme.muted
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 12 * root.dictaTheme.spacingScale
+                                    spacing: 10 * root.dictaTheme.spacingScale
+                                    ThemeIcon {
+                                        Layout.preferredWidth: 22 * root.dictaTheme.spacingScale
+                                        Layout.preferredHeight: width
+                                        iconName: "transcription"
+                                        iconColor: root.dictaTheme.darkForeground
+                                        iconSize: Math.round(width)
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: "Compact  ·  Included"
+                                            color: root.dictaTheme.brightForeground
+                                            font.family: root.dictaTheme.fontFamily
+                                            font.pixelSize: root.dictaTheme.baseFontSize
+                                            font.weight: Font.DemiBold
+                                            elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: "Fast offline fallback for rough transcripts."
+                                            color: root.dictaTheme.darkForeground
+                                            font.family: root.dictaTheme.fontFamily
+                                            font.pixelSize: Math.max(9,
+                                                root.dictaTheme.baseFontSize - 1)
+                                            elide: Text.ElideMiddle
+                                        }
+                                    }
+                                    Text {
+                                        text: "57 MB"
+                                        color: root.dictaTheme.darkForeground
+                                        font.family: root.dictaTheme.fontFamily
+                                        font.pixelSize: Math.max(9,
+                                            root.dictaTheme.baseFontSize - 1)
                                     }
                                 }
                             }
@@ -1115,7 +1168,7 @@ ApplicationWindow {
                         objectName: "settingsConnectionsCard"
                         visible: root.settingsSection === "connections"
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 150 * root.dictaTheme.spacingScale
+                        Layout.preferredHeight: 330 * root.dictaTheme.spacingScale
                         radius: 3 * root.dictaTheme.spacingScale
                         color: root.dictaTheme.darkBackground
                         border.width: 1
@@ -1196,6 +1249,67 @@ ApplicationWindow {
                                 font.family: root.dictaTheme.fontFamily
                                 font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
                                 wrapMode: Text.Wrap
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 1
+                                color: root.dictaTheme.muted
+                            }
+                            Repeater {
+                                model: [
+                                    {id: "claude", label: "Claude", detail: "Claude-compatible MCP configuration"},
+                                    {id: "grok", label: "Grok", detail: "Grok-compatible MCP configuration"}
+                                ]
+                                RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 62 * root.dictaTheme.spacingScale
+                                    spacing: 12 * root.dictaTheme.spacingScale
+                                    Rectangle {
+                                        Layout.preferredWidth: 42 * root.dictaTheme.spacingScale
+                                        Layout.preferredHeight: width
+                                        radius: 7 * root.dictaTheme.spacingScale
+                                        color: Qt.rgba(root.dictaTheme.foreground.r,
+                                            root.dictaTheme.foreground.g,
+                                            root.dictaTheme.foreground.b, 0.07)
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.label.substring(0, 1)
+                                            color: root.dictaTheme.brightForeground
+                                            font.family: root.dictaTheme.fontFamily
+                                            font.pixelSize: root.dictaTheme.baseFontSize + 3
+                                            font.weight: Font.DemiBold
+                                        }
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2 * root.dictaTheme.spacingScale
+                                        Text {
+                                            text: modelData.label
+                                            color: root.dictaTheme.brightForeground
+                                            font.family: root.dictaTheme.fontFamily
+                                            font.pixelSize: root.dictaTheme.baseFontSize + 1
+                                            font.weight: Font.DemiBold
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: modelData.detail
+                                            color: root.dictaTheme.darkForeground
+                                            font.family: root.dictaTheme.fontFamily
+                                            font.pixelSize: Math.max(9,
+                                                root.dictaTheme.baseFontSize - 1)
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                    FlatButton {
+                                        objectName: "copy-" + modelData.id + "-mcp-config"
+                                        dictaTheme: root.dictaTheme
+                                        text: "COPY CONFIG"
+                                        iconName: "copy"
+                                        enabled: Boolean(root.bridge.codexMcp.mcp_path)
+                                        onClicked: root.copyMcpConfig(modelData.label)
+                                    }
+                                }
                             }
                             Item { Layout.fillHeight: true }
                         }

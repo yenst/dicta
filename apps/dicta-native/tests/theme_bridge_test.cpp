@@ -23,6 +23,7 @@ class ThemeBridgeTest final : public QObject
 private slots:
     void loadsOmarchyPaletteAndScale();
     void userShellOverridesThemeScaleAndReloads();
+    void persistsBuiltInAppearanceOverride();
 };
 
 void ThemeBridgeTest::loadsOmarchyPaletteAndScale()
@@ -61,6 +62,26 @@ void ThemeBridgeTest::loadsOmarchyPaletteAndScale()
     QCOMPARE(bridge.baseFontSize(), 17);
     QCOMPARE(bridge.spacingScale(), 1.5);
     QVERIFY(!bridge.fontFamily().isEmpty());
+}
+
+void ThemeBridgeTest::persistsBuiltInAppearanceOverride()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString state = QDir(root.path()).filePath(QStringLiteral("state"));
+    const QString config = QDir(root.path()).filePath(QStringLiteral("config"));
+    QDir().mkpath(state);
+    ThemeBridge bridge(state, config);
+
+    QVERIFY(bridge.setAppearance(QStringLiteral("light")));
+    QCOMPARE(bridge.appearance(), QStringLiteral("light"));
+    QCOMPARE(bridge.name(), QStringLiteral("Dicta Light"));
+    QCOMPARE(bridge.mode(), QStringLiteral("light"));
+
+    ThemeBridge restored(state, config);
+    QCOMPARE(restored.appearance(), QStringLiteral("light"));
+    QCOMPARE(restored.background(), QColor(QStringLiteral("#e6e7ed")));
+    QVERIFY(!restored.setAppearance(QStringLiteral("unknown")));
 }
 
 void ThemeBridgeTest::userShellOverridesThemeScaleAndReloads()

@@ -172,6 +172,7 @@ Item {
                 property bool selected: root.bridge.selectedRecordingId === modelData.id
                 property bool keyboardSelected: root.keyboardFocused && selected
                 property bool deleteArmed: root.pendingDeleteId === modelData.id
+                property bool copied: false
                 height: (firstOfDay ? 46 : 0) * root.dictaTheme.spacingScale
                     + 88 * root.dictaTheme.spacingScale
 
@@ -344,14 +345,23 @@ Item {
                             height: width
                             z: 2
                             dictaTheme: root.dictaTheme
-                            iconName: "copy"
+                            iconName: recordingRow.copied ? "check" : "copy"
                             iconOnly: true
                             quiet: true
                             toolTip: "Copy recording ID"
                             onClicked: {
-                                root.bridge.copyText(recordingRow.modelData.id)
+                                if (!root.bridge.copyText(recordingRow.modelData.id))
+                                    return
+                                recordingRow.copied = true
+                                copiedResetTimer.restart()
                                 root.bridge.showToast("Recording ID copied")
                             }
+                        }
+                        Timer {
+                            id: copiedResetTimer
+                            interval: 1600
+                            repeat: false
+                            onTriggered: recordingRow.copied = false
                         }
                     }
 

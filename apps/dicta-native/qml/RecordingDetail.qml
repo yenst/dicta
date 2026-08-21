@@ -229,7 +229,7 @@ Item {
             FlatButton {
                 objectName: "copyContext"
                 dictaTheme: root.dictaTheme
-                iconName: "copy"
+                iconName: root.copied ? "check" : "copy"
                 iconOnly: true
                 quiet: true
                 toolTip: root.copied ? "Recording ID copied" : "Copy recording ID"

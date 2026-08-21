@@ -484,6 +484,7 @@ class DashboardTheme final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QString name MEMBER name CONSTANT)
+    Q_PROPERTY(QString appearance MEMBER appearance NOTIFY changed)
     Q_PROPERTY(QString mode MEMBER mode CONSTANT)
     Q_PROPERTY(QString fontFamily MEMBER fontFamily CONSTANT)
     Q_PROPERTY(int baseFontSize MEMBER baseFontSize CONSTANT)
@@ -509,6 +510,7 @@ class DashboardTheme final : public QObject
 
 public:
     QString name = QStringLiteral("tokyo-night");
+    QString appearance = QStringLiteral("system");
     QString mode = QStringLiteral("dark");
     QString fontFamily = QStringLiteral("monospace");
     int baseFontSize = 14;
@@ -531,6 +533,16 @@ public:
     QColor cyan {QStringLiteral("#449dab")};
     QColor blue {QStringLiteral("#7aa2f7")};
     QColor magenta {QStringLiteral("#ad8ee6")};
+
+    Q_INVOKABLE bool setAppearance(const QString &value)
+    {
+        appearance = value;
+        emit changed();
+        return true;
+    }
+
+signals:
+    void changed();
 };
 
 class DashboardQmlTest final : public QObject
@@ -875,12 +887,14 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("projectPathBadge")) == nullptr);
     QVERIFY(QMetaObject::invokeMethod(branchBadge, "clicked"));
     QCOMPARE(bridge.copiedText, QStringLiteral("main"));
+    QCOMPARE(bridge.toastCalls, 1);
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Git branch copied"));
 
     QTest::keyClick(window, Qt::Key_Down);
     QTRY_COMPARE(bridge.selectedRecordingId, QStringLiteral("second"));
     QTest::keyClick(window, Qt::Key_C);
     QCOMPARE(bridge.copyCalls, 1);
-    QCOMPARE(bridge.toastCalls, 1);
+    QCOMPARE(bridge.toastCalls, 2);
     QCOMPARE(bridge.toastMessage, QStringLiteral("Recording ID copied"));
 
     QTest::keyClick(window, Qt::Key_Right);
@@ -1074,10 +1088,28 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
     QTRY_VERIFY((connectionsCard = dashboard->findChild<QObject *>(
         QStringLiteral("settingsConnectionsCard"))) != nullptr);
     QVERIFY(appearanceCard->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(
+        dashboard.get(),
+        "updateAppearance",
+        Q_ARG(QVariant, QVariant(QStringLiteral("light")))
+    ));
+    QCOMPARE(theme.appearance, QStringLiteral("light"));
     QVERIFY(!connectionsCard->property("visible").toBool());
     dashboard->setProperty("settingsSection", QStringLiteral("connections"));
     QTRY_VERIFY(!appearanceCard->property("visible").toBool());
     QTRY_VERIFY(connectionsCard->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(
+        dashboard.get(),
+        "copyMcpConfig",
+        Q_ARG(QVariant, QVariant(QStringLiteral("Claude")))
+    ));
+    QVERIFY(bridge.copiedText.contains(QStringLiteral("dicta-mcp")));
+    QVERIFY(QMetaObject::invokeMethod(
+        dashboard.get(),
+        "copyMcpConfig",
+        Q_ARG(QVariant, QVariant(QStringLiteral("Grok")))
+    ));
+    QCOMPARE(bridge.copyTextCalls, 2);
 
     QVERIFY(QMetaObject::invokeMethod(
         dashboard.get(),
