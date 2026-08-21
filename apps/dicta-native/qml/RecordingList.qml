@@ -11,6 +11,32 @@ Item {
     property string filterText: ""
     property var recordings: bridge.recentRecordings || []
     property bool keyboardFocused: false
+    property string pendingDeleteId: ""
+    readonly property bool deleteActionVisible: pendingDeleteId.length > 0
+    signal keyboardFocusRequested()
+
+    function requestDelete() {
+        var recordingId = String(bridge.selectedRecordingId || "")
+        if (!recordingId.length || bridge.runtimePhase !== "idle")
+            return false
+        if (pendingDeleteId !== recordingId) {
+            pendingDeleteId = recordingId
+            deleteArmTimer.restart()
+            return true
+        }
+        var removed = bridge.deleteSelectedRecording()
+        if (removed)
+            pendingDeleteId = ""
+        return removed
+    }
+
+    function confirmDelete(recordingId) {
+        if (pendingDeleteId !== recordingId)
+            return false
+        if (String(bridge.selectedRecordingId || "") !== recordingId)
+            bridge.selectRecording(recordingId)
+        return requestDelete()
+    }
 
     function filteredRecordings() {
         var query = filterText.trim().toLowerCase()
@@ -38,6 +64,7 @@ Item {
             return
         var next = selectedIndex()
         next = Math.max(0, Math.min(rows.length - 1, next + delta))
+        pendingDeleteId = ""
         bridge.selectRecording(rows[next].id)
         recordingList.positionViewAtIndex(next, ListView.Contain)
     }
@@ -142,6 +169,7 @@ Item {
                         !== root.dayKey(modelData.started_at)
                 property bool selected: root.bridge.selectedRecordingId === modelData.id
                 property bool keyboardSelected: root.keyboardFocused && selected
+                property bool deleteArmed: root.pendingDeleteId === modelData.id
                 height: (firstOfDay ? 46 : 0) * root.dictaTheme.spacingScale
                     + 88 * root.dictaTheme.spacingScale
 
@@ -158,9 +186,33 @@ Item {
                 }
 
                 Rectangle {
+                    visible: root.deleteActionVisible && recordingRow.deleteArmed
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    width: 58 * root.dictaTheme.spacingScale
+                    height: 88 * root.dictaTheme.spacingScale
+                    color: Qt.rgba(root.dictaTheme.red.r, root.dictaTheme.red.g,
+                        root.dictaTheme.red.b, 0.11)
+
+                    FlatButton {
+                        objectName: "confirmDelete-" + recordingRow.modelData.id
+                        anchors.centerIn: parent
+                        dictaTheme: root.dictaTheme
+                        iconName: "delete"
+                        iconOnly: true
+                        quiet: true
+                        destructive: true
+                        toolTip: "Delete recording"
+                        onClicked: root.confirmDelete(recordingRow.modelData.id)
+                    }
+                }
+
+                Rectangle {
                     id: rowSurface
                     anchors.left: parent.left
                     anchors.right: parent.right
+                    anchors.rightMargin: recordingRow.deleteArmed
+                        ? 58 * root.dictaTheme.spacingScale : 0
                     anchors.bottom: parent.bottom
                     height: 88 * root.dictaTheme.spacingScale
                     color: recordingRow.selected
@@ -171,6 +223,10 @@ Item {
                             ? Qt.rgba(root.dictaTheme.foreground.r, root.dictaTheme.foreground.g,
                                 root.dictaTheme.foreground.b, 0.04)
                             : "transparent"
+
+                    Behavior on anchors.rightMargin {
+                        NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                    }
 
                     Rectangle {
                         visible: recordingRow.selected
@@ -277,7 +333,11 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: root.bridge.selectRecording(recordingRow.modelData.id)
+                        onClicked: {
+                            root.pendingDeleteId = ""
+                            root.bridge.selectRecording(recordingRow.modelData.id)
+                            root.keyboardFocusRequested()
+                        }
                     }
                 }
             }
@@ -299,13 +359,39 @@ Item {
 
     }
 
-    Rectangle {
+    Item {
         objectName: "recordingKeyboardBorder"
         anchors.fill: parent
         z: 20
-        color: "transparent"
-        border.width: root.keyboardFocused ? 3 : 0
-        border.color: root.dictaTheme.accent
         visible: root.keyboardFocused
+
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 2
+            color: root.dictaTheme.accent
+        }
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            width: 2
+            color: root.dictaTheme.accent
+        }
+        Rectangle {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            width: 2
+            color: root.dictaTheme.accent
+        }
+    }
+
+    Timer {
+        id: deleteArmTimer
+        interval: 5000
+        onTriggered: root.pendingDeleteId = ""
     }
 }

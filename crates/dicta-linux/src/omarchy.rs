@@ -103,16 +103,15 @@ fn managed_binding(shortcut_id: &str) -> Result<String, PortError> {
            size = {{ \"monitor_w\", \"monitor_h\" }},\n\
            move = {{ 0, 0 }},\n\
          }})\n\
-         o.window({{ class = \"^dicta-native$\", title = \"^Dicta Annotation Helper$\" }}, {{\n\
+         o.window({{ class = \"^dicta-native$\", title = \"^Dicta status$\" }}, {{\n\
            tag = \"-default-opacity\",\n\
            float = true,\n\
            pin = true,\n\
            no_initial_focus = true,\n\
            border_size = 0,\n\
-           rounding = 0,\n\
+           rounding = 12,\n\
            opacity = \"1 1\",\n\
-           size = {{ 326, 42 }},\n\
-           move = {{ \"(monitor_w-window_w)/2\", 42 }},\n\
+           move = {{ \"monitor_w-window_w-24\", \"monitor_h-window_h-34\" }},\n\
          }})\n"
     ))
 }
@@ -222,7 +221,9 @@ mod tests {
         assert!(control_space.contains("\"dicta annotate disable\""));
         assert!(control_space.contains("release = true"));
         assert!(control_space.contains("Dicta Annotation Overlay"));
-        assert!(control_space.contains("Dicta Annotation Helper"));
+        assert!(!control_space.contains("Dicta Annotation Helper"));
+        assert!(control_space.contains("Dicta status"));
+        assert!(control_space.contains("monitor_h-window_h-34"));
         assert!(control_space.contains("float = true"));
         assert!(!control_space.contains("--toggle-recording"));
 

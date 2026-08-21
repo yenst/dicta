@@ -7,6 +7,7 @@
 #include <QQmlError>
 #include <QQuickWindow>
 #include <QScreen>
+#include <QVariant>
 
 namespace {
 QString componentErrors(const QQmlComponent &component)
@@ -169,6 +170,20 @@ bool OverlayController::startRecordingClock()
     }
     m_surface->startRecordingClock();
     return true;
+}
+
+void OverlayController::showToast(const QString &message)
+{
+    if (!m_ready || m_window == nullptr || message.trimmed().isEmpty()) {
+        return;
+    }
+    if (!QMetaObject::invokeMethod(
+            m_window,
+            "showToast",
+            Q_ARG(QVariant, QVariant(message.trimmed()))
+        )) {
+        fail(tr("The status toast could not be shown."));
+    }
 }
 
 void OverlayController::enterAnnotationMode()

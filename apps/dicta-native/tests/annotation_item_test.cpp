@@ -31,6 +31,7 @@ private slots:
     void visibleOverlayIsRemappedForEachInputMode();
     void focusedOverlayRoutesEscapeToPassThroughRequest();
     void helperCanRemainVisibleWhileDrawingSurfaceIsUnmapped();
+    void statusToastCanShowWithoutMappingDrawingSurface();
 };
 
 namespace {
@@ -273,21 +274,55 @@ void AnnotationItemTest::helperCanRemainVisibleWhileDrawingSurfaceIsUnmapped()
     QVERIFY2(created, qPrintable(component.errorString()));
     auto *overlay = qobject_cast<QQuickWindow *>(created.get());
     QVERIFY(overlay != nullptr);
-    auto *helper = overlay->findChild<QQuickWindow *>(
-        QStringLiteral("dictaAnnotationHelper")
-    );
-    QVERIFY(helper != nullptr);
+    auto *toast = overlay->findChild<QQuickWindow *>(QStringLiteral("dictaStatusToast"));
+    QObject *text = overlay->findChild<QObject *>(QStringLiteral("dictaStatusToastText"));
+    QVERIFY(toast != nullptr);
+    QVERIFY(text != nullptr);
     QVERIFY(!overlay->isVisible());
-    QVERIFY(!helper->isVisible());
-    QVERIFY(helper->flags().testFlag(Qt::WindowTransparentForInput));
-    QVERIFY(helper->flags().testFlag(Qt::WindowDoesNotAcceptFocus));
+    QVERIFY(!toast->isVisible());
+    QVERIFY(toast->flags().testFlag(Qt::WindowTransparentForInput));
+    QVERIFY(toast->flags().testFlag(Qt::WindowDoesNotAcceptFocus));
 
     QVERIFY(QMetaObject::invokeMethod(overlay, "showHelper"));
-    QTRY_VERIFY(helper->isVisible());
+    QTRY_VERIFY(toast->isVisible());
+    QCOMPARE(text->property("text").toString(),
+             QStringLiteral("Hold F8 to draw while recording"));
     QVERIFY(!overlay->isVisible());
 
     QVERIFY(QMetaObject::invokeMethod(overlay, "hideHelper"));
-    QTRY_VERIFY(!helper->isVisible());
+    QVERIFY(toast->isVisible());
+}
+
+void AnnotationItemTest::statusToastCanShowWithoutMappingDrawingSurface()
+{
+    qmlRegisterType<AnnotationItem>("Dicta.Native", 1, 0, "AnnotationItem");
+    QQmlEngine engine;
+    QQmlComponent component(
+        &engine,
+        QUrl::fromLocalFile(QStringLiteral(DICTA_OVERLAY_QML_PATH))
+    );
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QScopedPointer<QObject> created(component.create());
+    QVERIFY2(created, qPrintable(component.errorString()));
+    auto *overlay = qobject_cast<QQuickWindow *>(created.get());
+    QVERIFY(overlay != nullptr);
+    auto *toast = overlay->findChild<QQuickWindow *>(QStringLiteral("dictaStatusToast"));
+    QObject *text = overlay->findChild<QObject *>(QStringLiteral("dictaStatusToastText"));
+    QVERIFY(toast != nullptr);
+    QVERIFY(text != nullptr);
+    QVERIFY(!overlay->isVisible());
+    QVERIFY(!toast->isVisible());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        overlay,
+        "showToast",
+        Q_ARG(QVariant, QVariant(QStringLiteral("Recording started")))
+    ));
+    QTRY_VERIFY(toast->isVisible());
+    QCOMPARE(text->property("text").toString(), QStringLiteral("Recording started"));
+    QVERIFY(!overlay->isVisible());
+    QVERIFY(toast->flags().testFlag(Qt::WindowTransparentForInput));
+    QVERIFY(toast->flags().testFlag(Qt::WindowDoesNotAcceptFocus));
 }
 
 QTEST_MAIN(AnnotationItemTest)

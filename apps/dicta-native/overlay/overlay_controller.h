@@ -50,6 +50,7 @@ public:
     Q_INVOKABLE [[nodiscard]] QStringList availableOutputs() const;
     Q_INVOKABLE [[nodiscard]] bool showOnOutput(const QString &outputName);
     Q_INVOKABLE [[nodiscard]] bool startRecordingClock();
+    Q_INVOKABLE void showToast(const QString &message);
     Q_INVOKABLE void enterAnnotationMode();
     Q_INVOKABLE void setAnnotationMode(bool enabled);
     Q_INVOKABLE void setTool(Tool tool);

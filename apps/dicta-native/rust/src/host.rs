@@ -622,6 +622,18 @@ pub fn select_project(project_id: String) -> Result<(), String> {
     expect_accepted(&response)
 }
 
+pub fn remove_project(project_id: String) -> Result<(), String> {
+    let response = control_request(Command::ProjectRemove {
+        project: project_id,
+    })?;
+    expect_accepted(&response)
+}
+
+pub fn add_project(path: String) -> Result<(), String> {
+    let response = control_request(Command::ProjectAdd { path, name: None })?;
+    expect_accepted(&response)
+}
+
 pub fn create_project(name: String) -> Result<(), String> {
     let response = control_request(Command::ProjectCreate { name })?;
     expect_accepted(&response)

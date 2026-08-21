@@ -214,16 +214,15 @@ printf '%s\n' \
   '  size = { "monitor_w", "monitor_h" },' \
   '  move = { 0, 0 },' \
   '})' \
-  'o.window({ class = "^dicta-native$", title = "^Dicta Annotation Helper$" }, {' \
+  'o.window({ class = "^dicta-native$", title = "^Dicta status$" }, {' \
   '  tag = "-default-opacity",' \
   '  float = true,' \
   '  pin = true,' \
   '  no_initial_focus = true,' \
   '  border_size = 0,' \
-  '  rounding = 0,' \
+  '  rounding = 12,' \
   '  opacity = "1 1",' \
-  '  size = { 326, 42 },' \
-  '  move = { "(monitor_w-window_w)/2", 42 },' \
+  '  move = { "monitor_w-window_w-24", "monitor_h-window_h-34" },' \
   '})' \
   >"$temporary"
 chmod 0644 "$temporary"

@@ -13,6 +13,7 @@ Item {
     property int keyboardIndex: 0
     signal settingsRequested()
     signal addProjectRequested()
+    signal keyboardFocusRequested()
 
     function isGeneral(project) {
         return String(project && project.id || "") === "__unprojected__"
@@ -57,6 +58,13 @@ Item {
             bridge.selectProject(rows[keyboardIndex].id)
     }
 
+    function activateRecordingSelection() {
+        var rows = sortedProjects()
+        if (keyboardIndex < 0 || keyboardIndex >= rows.length)
+            return false
+        return bridge.selectRecordingProject(rows[keyboardIndex].id)
+    }
+
     onKeyboardFocusedChanged: if (keyboardFocused) syncKeyboardIndex()
 
     Connections {
@@ -91,6 +99,9 @@ Item {
                     : "qrc:/dicta/assets/dicta-mark-light.png"
                 fillMode: Image.PreserveAspectFit
                 smooth: true
+                mipmap: true
+                sourceSize.width: Math.round(width * Screen.devicePixelRatio)
+                sourceSize.height: Math.round(height * Screen.devicePixelRatio)
             }
 
             Text {
@@ -134,6 +145,7 @@ Item {
                 width: projectList.width
                 height: 68 * root.dictaTheme.spacingScale
                 property bool selected: Boolean(modelData.selected)
+                property bool recordingSelected: Boolean(modelData.recordingSelected)
                 property bool keyboardSelected: root.keyboardFocused
                     && root.keyboardIndex === index
 
@@ -177,7 +189,7 @@ Item {
                     anchors.left: parent.left
                     anchors.leftMargin: 56 * root.dictaTheme.spacingScale
                     anchors.right: parent.right
-                    anchors.rightMargin: 16 * root.dictaTheme.spacingScale
+                    anchors.rightMargin: 76 * root.dictaTheme.spacingScale
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 3 * root.dictaTheme.spacingScale
 
@@ -202,12 +214,84 @@ Item {
                     }
                 }
 
+                ThemeIcon {
+                    objectName: "recordingDestinationCheck"
+                    visible: projectRow.recordingSelected
+                    anchors.right: parent.right
+                    anchors.rightMargin: 43 * root.dictaTheme.spacingScale
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 17 * root.dictaTheme.spacingScale
+                    height: width
+                    iconName: "check"
+                    iconColor: root.dictaTheme.accent
+                    iconSize: Math.round(width)
+                }
+
+                FlatButton {
+                    id: projectActionsButton
+                    objectName: "projectActions-" + projectRow.modelData.id
+                    visible: !root.isGeneral(projectRow.modelData)
+                        && (projectMouse.containsMouse || hovered || projectActions.opened)
+                    anchors.right: parent.right
+                    anchors.rightMargin: 7 * root.dictaTheme.spacingScale
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 30 * root.dictaTheme.spacingScale
+                    height: width
+                    z: 2
+                    dictaTheme: root.dictaTheme
+                    iconName: "more"
+                    iconOnly: true
+                    quiet: true
+                    toolTip: "Project actions"
+                    onClicked: projectActions.open()
+                }
+
+                Popup {
+                    id: projectActions
+                    x: projectRow.width - width - 8 * root.dictaTheme.spacingScale
+                    y: projectRow.height - 4 * root.dictaTheme.spacingScale
+                    z: 10
+                    width: 174 * root.dictaTheme.spacingScale
+                    padding: 6 * root.dictaTheme.spacingScale
+                    modal: false
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    background: Rectangle {
+                        color: root.dictaTheme.darkBackground
+                        border.width: 1
+                        border.color: root.dictaTheme.muted
+                        radius: 4 * root.dictaTheme.spacingScale
+                    }
+                    contentItem: FlatButton {
+                        objectName: "removeProject-" + projectRow.modelData.id
+                        dictaTheme: root.dictaTheme
+                        text: "Remove project"
+                        iconName: "clear"
+                        quiet: true
+                        destructive: true
+                        enabled: root.bridge.runtimePhase === "idle"
+                        onClicked: {
+                            projectActions.close()
+                            if (root.bridge.removeProject(projectRow.modelData.id))
+                                root.bridge.showToast("Project removed")
+                        }
+                    }
+                }
+
                 MouseArea {
                     id: projectMouse
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.bridge.selectProject(projectRow.modelData.id)
+                    onClicked: {
+                        root.bridge.selectProject(projectRow.modelData.id)
+                        root.keyboardFocusRequested()
+                    }
+                    onDoubleClicked: {
+                        if (root.bridge.selectRecordingProject(projectRow.modelData.id))
+                            root.bridge.showToast("Recording destination · "
+                                + (projectRow.modelData.name || projectRow.modelData.id))
+                        root.keyboardFocusRequested()
+                    }
                 }
             }
         }
@@ -217,6 +301,7 @@ Item {
             Layout.preferredHeight: 40 * root.dictaTheme.spacingScale
             Layout.leftMargin: 12 * root.dictaTheme.spacingScale
             Layout.rightMargin: 12 * root.dictaTheme.spacingScale
+            Layout.topMargin: 8 * root.dictaTheme.spacingScale
             Layout.bottomMargin: 10 * root.dictaTheme.spacingScale
             dictaTheme: root.dictaTheme
             text: "New project"
@@ -242,13 +327,18 @@ Item {
         }
     }
 
-    Rectangle {
+    Item {
         objectName: "projectKeyboardBorder"
         anchors.fill: parent
         z: 20
-        color: "transparent"
-        border.width: root.keyboardFocused ? 3 : 0
-        border.color: root.dictaTheme.accent
         visible: root.keyboardFocused
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            width: 2
+            color: root.dictaTheme.accent
+        }
     }
 }

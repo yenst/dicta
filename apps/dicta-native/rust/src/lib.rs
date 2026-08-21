@@ -603,6 +603,48 @@ pub unsafe extern "C" fn dicta_native_host_project_select(
     unsafe { recording_action(project_id, project_id_len, host::select_project) }
 }
 
+/// Unlinks a project from Dicta without deleting its repository.
+///
+/// # Safety
+/// `project_id` must contain `project_id_len` readable UTF-8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_host_project_remove(
+    project_id: *const u8,
+    project_id_len: usize,
+) -> i32 {
+    // SAFETY: Project IDs and recording IDs share the same bounded UTF-8 ABI.
+    unsafe { recording_action(project_id, project_id_len, host::remove_project) }
+}
+
+/// Links an existing Git repository.
+///
+/// # Safety
+/// `path` must contain `path_len` readable UTF-8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_host_project_add(path: *const u8, path_len: usize) -> i32 {
+    if path_len == 0 || path_len > 4096 || path.is_null() {
+        host::set_detached_error("project path is invalid".to_owned());
+        return -1;
+    }
+    let path = match unsafe { utf8_field(path, path_len, "project path") } {
+        Ok(value) => value,
+        Err(message) => {
+            host::set_detached_error(message);
+            return -1;
+        }
+    };
+    match host::add_project(path) {
+        Ok(()) => {
+            host::set_detached_error(String::new());
+            0
+        }
+        Err(message) => {
+            host::set_detached_error(message);
+            -2
+        }
+    }
+}
+
 /// Creates and selects a standalone project.
 ///
 /// # Safety

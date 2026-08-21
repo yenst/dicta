@@ -32,9 +32,14 @@ Panel {
       var project = service.projects[i] || {}
       var haystack = (String(project.name || "") + " " + String(project.branch || "") + " " + String(project.path || "")).toLowerCase()
       if (query === "" || haystack.indexOf(query) !== -1) result.push(project)
-      if (result.length === 3) break
     }
-    return result
+    result.sort(function(left, right) {
+      var leftGeneral = String(left && left.id || "") === "__unprojected__"
+      var rightGeneral = String(right && right.id || "") === "__unprojected__"
+      if (leftGeneral !== rightGeneral) return leftGeneral ? -1 : 1
+      return String(left && left.name || "").localeCompare(String(right && right.name || ""))
+    })
+    return result.slice(0, 3)
   }
 
   function setProjectCursor(index) {
@@ -120,8 +125,8 @@ Panel {
       interactive: false
       bar: root.bar
       tooltipText: service.dictaRunning
-        ? "Dicta projects · click the dot to record"
-        : "Open Dicta · click the dot to start recording"
+        ? "Dicta projects"
+        : "Open Dicta"
       iconComponent: Component {
         Item {
           Image {
@@ -130,28 +135,8 @@ Panel {
             fillMode: Image.PreserveAspectFit
             sourceSize.width: Math.round(width * Screen.devicePixelRatio)
             sourceSize.height: Math.round(height * Screen.devicePixelRatio)
-          }
-
-          ThemeIcon {
-            id: recordHalo
-            visible: service.recordingActive
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.rightMargin: -Style.space(1)
-            anchors.bottomMargin: -Style.space(1)
-            width: Style.space(8)
-            height: width
-            iconName: "media-record-symbolic"
-            iconColor: "#11131c"
-          }
-
-          ThemeIcon {
-            visible: service.recordingActive
-            anchors.centerIn: recordHalo
-            width: Style.space(6)
-            height: width
-            iconName: "media-record-symbolic"
-            iconColor: "#ffffff"
+            smooth: true
+            mipmap: true
           }
         }
       }
@@ -172,10 +157,7 @@ Panel {
           } else if (mouse.button === Qt.MiddleButton) {
             service.refresh(service.selectedProjectId)
           } else {
-            var hotspot = Style.space(13)
-            var recordingClick = mouse.x >= width - hotspot && mouse.y >= height - hotspot
-            if (recordingClick) service.toggleRecording()
-            else root.toggle()
+            root.toggle()
           }
         }
       }
@@ -237,6 +219,8 @@ Panel {
                 fillMode: Image.PreserveAspectFit
                 sourceSize.width: Math.round(width * Screen.devicePixelRatio)
                 sourceSize.height: Math.round(height * Screen.devicePixelRatio)
+                smooth: true
+                mipmap: true
               }
             }
             trailingControl: Component {
@@ -388,6 +372,8 @@ Panel {
     property var project: null
     property int rowIndex: 0
     readonly property bool selected: project && String(project.id || "") === service.selectedProjectId
+    readonly property bool general: project && String(project.id || "") === "__unprojected__"
+    readonly property bool recordingTarget: project && Boolean(project.selected)
 
     hasCursor: root.cursorActive && root.focusSection === "projects" && root.projectIndex === rowIndex
     current: selected
@@ -430,6 +416,7 @@ Panel {
       }
 
       Text {
+        visible: !projectRow.general
         text: ""
         color: root.dim
         font.family: root.fontFamily
@@ -447,10 +434,18 @@ Panel {
       }
 
       ThemeIcon {
-        visible: projectRow.hasCursor || projectRow.selected
+        visible: projectRow.recordingTarget
         Layout.preferredWidth: visible ? Style.space(18) : 0
         Layout.preferredHeight: Style.space(18)
-        iconName: projectRow.hasCursor ? "document-open-symbolic" : "object-select-symbolic"
+        iconName: "object-select-symbolic"
+        iconColor: root.foreground
+      }
+
+      ThemeIcon {
+        visible: projectRow.hasCursor
+        Layout.preferredWidth: visible ? Style.space(18) : 0
+        Layout.preferredHeight: Style.space(18)
+        iconName: "document-open-symbolic"
         iconColor: root.foreground
       }
     }

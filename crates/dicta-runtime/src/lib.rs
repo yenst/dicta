@@ -1014,9 +1014,8 @@ where
     }
 
     fn add_project(&mut self, path: &str, name: Option<&str>) -> Result<Response, RuntimeError> {
-        self.require_idle_project_mutation("add a project")?;
-        let project = self.storage.add_project(path, name)?;
-        self.select_project(project.id.into_string())
+        self.storage.add_project(path, name)?;
+        Ok(Response::Accepted)
     }
 
     fn create_project(&mut self, name: &str) -> Result<Response, RuntimeError> {
@@ -3108,7 +3107,7 @@ mod tests {
             name: Some("Linked Project".to_owned()),
         }));
         assert_eq!(response(&linked), &Response::Accepted);
-        assert_eq!(runtime.snapshot().status.project.as_deref(), Some("linked"));
+        assert_eq!(runtime.snapshot().status.project, None);
         let refreshed = runtime.handle(request(ControlCommand::ProjectRefresh {
             project: "linked".to_owned(),
         }));
@@ -3116,7 +3115,13 @@ mod tests {
             panic!("project refresh returned another response type");
         };
         assert_eq!(project.name, "Linked Project");
-        assert!(project.selected);
+        assert!(!project.selected);
+
+        let selected = runtime.handle(request(ControlCommand::ProjectSelect {
+            project: "linked".to_owned(),
+        }));
+        assert_eq!(response(&selected), &Response::Accepted);
+        assert_eq!(runtime.snapshot().status.project.as_deref(), Some("linked"));
 
         let removed = runtime.handle(request(ControlCommand::ProjectRemove {
             project: "linked".to_owned(),
@@ -3136,6 +3141,33 @@ mod tests {
             runtime.snapshot().status.project.as_deref(),
             Some("created")
         );
+    }
+
+    #[test]
+    fn project_linking_during_recording_preserves_the_recording_destination() {
+        let mut runtime = runtime(
+            StartMode::Ready,
+            StopMode::Ready,
+            TranscriptionMode::Ready,
+            false,
+        );
+        assert_eq!(error_code(&start(&mut runtime)), None);
+        assert_eq!(runtime.snapshot().status.phase, AppPhase::Recording);
+        assert_eq!(runtime.snapshot().status.project.as_deref(), Some("dicta"));
+
+        let linked = runtime.handle(request(ControlCommand::ProjectAdd {
+            path: "/projects/linked".to_owned(),
+            name: Some("Linked Project".to_owned()),
+        }));
+
+        assert_eq!(response(&linked), &Response::Accepted);
+        assert_eq!(runtime.snapshot().status.project.as_deref(), Some("dicta"));
+        let listed = runtime.handle(request(ControlCommand::ProjectList));
+        let Response::Projects(projects) = response(&listed) else {
+            panic!("project list returned another response type");
+        };
+        assert!(projects.iter().any(|project| project.id == "linked"));
+        assert!(projects.iter().all(|project| !project.selected));
     }
 
     #[test]

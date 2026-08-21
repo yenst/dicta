@@ -51,6 +51,9 @@ Item {
                     : "qrc:/dicta/assets/dicta-mark-light.png"
                 fillMode: Image.PreserveAspectFit
                 smooth: true
+                mipmap: true
+                sourceSize.width: Math.round(width * Screen.devicePixelRatio)
+                sourceSize.height: Math.round(height * Screen.devicePixelRatio)
             }
 
             ColumnLayout {

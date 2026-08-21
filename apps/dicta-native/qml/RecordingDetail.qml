@@ -9,14 +9,16 @@ Item {
     required property QtObject bridge
     required property QtObject dictaTheme
     property int currentTab: 0
-    property bool confirmDelete: false
     property bool copied: false
     property bool keyboardActive: false
     property int keyboardTarget: 0
+    property int actionIndex: 0
     readonly property bool noteEditorFocused: noteField.activeFocus
     property var recording: bridge.selectedRecording || ({})
     property bool hasRecording: Boolean(recording.id)
     signal keyboardFocusRequested()
+    signal contextCopied()
+    signal deleteRequested()
 
     function resetKeyboardTarget() {
         keyboardTarget = 0
@@ -62,6 +64,36 @@ Item {
         return keyboardTarget === 3
     }
 
+    function actionEnabled(index) {
+        if (index === 1)
+            return bridge.runtimePhase === "idle" && Boolean(recording.success)
+        if (index === 3)
+            return bridge.runtimePhase === "idle"
+        return true
+    }
+
+    function moveActionSelection(delta) {
+        var next = actionIndex
+        for (var attempts = 0; attempts < 4; ++attempts) {
+            next = (next + delta + 4) % 4
+            if (actionEnabled(next)) {
+                actionIndex = next
+                return
+            }
+        }
+    }
+
+    function activateActionSelection() {
+        if (actionIndex === 0)
+            openExternalAction.clicked()
+        else if (actionIndex === 1)
+            transcribeAction.clicked()
+        else if (actionIndex === 2)
+            revealAction.clicked()
+        else
+            deleteAction.clicked()
+    }
+
     function playbackPosition() {
         return playerLoader.active && playerLoader.item
             ? Number(playerLoader.item.positionSeconds || 0) : 0
@@ -85,25 +117,8 @@ Item {
             return false
         copied = true
         copiedTimer.restart()
+        contextCopied()
         return true
-    }
-
-    function promptDelete() {
-        if (!hasRecording || bridge.runtimePhase !== "idle")
-            return false
-        confirmDelete = true
-        deleteConfirmTimer.restart()
-        actionPopup.open()
-        return true
-    }
-
-    function confirmDeleteNow() {
-        if (!confirmDelete)
-            return false
-        var removed = bridge.deleteSelectedRecording()
-        confirmDelete = false
-        actionPopup.close()
-        return removed
     }
 
     function duration(seconds) {
@@ -217,7 +232,7 @@ Item {
                 iconName: "copy"
                 iconOnly: true
                 quiet: true
-                toolTip: root.copied ? "Context copied" : "Copy context"
+                toolTip: root.copied ? "Recording ID copied" : "Copy recording ID"
                 selected: root.keyboardActive && root.keyboardTarget === 1 || root.copied
                 onClicked: root.copyContext()
             }
@@ -244,7 +259,7 @@ Item {
             color: root.dictaTheme.darkerBackground
             border.color: root.keyboardActive && root.keyboardTarget === 0
                 ? root.dictaTheme.accent : root.dictaTheme.muted
-            border.width: root.keyboardActive && root.keyboardTarget === 0 ? 3 : 1
+            border.width: root.keyboardActive && root.keyboardTarget === 0 ? 2 : 1
             radius: 4 * root.dictaTheme.spacingScale
             clip: true
 
@@ -783,14 +798,26 @@ Item {
 
     }
 
-    Rectangle {
+    Item {
         objectName: "detailKeyboardBorder"
         anchors.fill: parent
         z: 90
-        color: "transparent"
-        border.width: root.keyboardActive ? 3 : 0
-        border.color: root.dictaTheme.accent
         visible: root.keyboardActive
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 2
+            color: root.dictaTheme.accent
+        }
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            width: 2
+            color: root.dictaTheme.accent
+        }
     }
 
     Popup {
@@ -804,11 +831,11 @@ Item {
         modal: false
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        onClosed: {
-            root.confirmDelete = false
-            root.keyboardFocusRequested()
+        onClosed: root.keyboardFocusRequested()
+        onOpened: {
+            root.actionIndex = 0
+            actionContent.forceActiveFocus()
         }
-        onOpened: actionContent.forceActiveFocus()
 
         background: Rectangle {
             color: root.dictaTheme.darkBackground
@@ -822,24 +849,39 @@ Item {
             focus: true
             spacing: 3 * root.dictaTheme.spacingScale
             Keys.onPressed: event => {
-                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                        && root.confirmDelete) {
-                    root.confirmDeleteNow()
+                if (event.key === Qt.Key_Up) {
+                    root.moveActionSelection(-1)
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Down) {
+                    root.moveActionSelection(1)
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Home) {
+                    root.actionIndex = 0
+                    event.accepted = true
+                } else if (event.key === Qt.Key_End) {
+                    root.actionIndex = root.actionEnabled(3) ? 3 : 2
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    root.activateActionSelection()
                     event.accepted = true
                 }
             }
             FlatButton {
+                id: openExternalAction
+                objectName: "openExternalRecording"
                 Layout.fillWidth: true
                 dictaTheme: root.dictaTheme
                 text: "Open externally"
                 iconName: "play"
                 quiet: true
+                selected: root.actionIndex === 0
                 onClicked: {
                     root.bridge.openSelectedRecording()
                     actionPopup.close()
                 }
             }
             FlatButton {
+                id: transcribeAction
                 objectName: "transcribeRecording"
                 Layout.fillWidth: true
                 dictaTheme: root.dictaTheme
@@ -847,6 +889,7 @@ Item {
                     ? "Retry transcription" : "Transcribe again"
                 iconName: "microphone"
                 quiet: true
+                selected: root.actionIndex === 1
                 enabled: root.bridge.runtimePhase === "idle"
                     && Boolean(root.recording.success)
                 onClicked: {
@@ -855,11 +898,14 @@ Item {
                 }
             }
             FlatButton {
+                id: revealAction
+                objectName: "revealRecordingFiles"
                 Layout.fillWidth: true
                 dictaTheme: root.dictaTheme
                 text: "Reveal files"
                 iconName: "folder-open"
                 quiet: true
+                selected: root.actionIndex === 2
                 onClicked: {
                     root.bridge.revealSelectedRecording()
                     actionPopup.close()
@@ -871,19 +917,19 @@ Item {
                 color: root.dictaTheme.muted
             }
             FlatButton {
+                id: deleteAction
                 objectName: "deleteRecording"
                 Layout.fillWidth: true
                 dictaTheme: root.dictaTheme
-                text: root.confirmDelete ? "Confirm delete" : "Delete recording"
+                text: "Delete recording"
                 iconName: "clear"
                 quiet: true
                 destructive: true
+                selected: root.actionIndex === 3
                 enabled: root.bridge.runtimePhase === "idle"
                 onClicked: {
-                    if (root.confirmDelete)
-                        root.confirmDeleteNow()
-                    else
-                        root.promptDelete()
+                    actionPopup.close()
+                    root.deleteRequested()
                 }
             }
         }
@@ -893,10 +939,5 @@ Item {
         id: copiedTimer
         interval: 1800
         onTriggered: root.copied = false
-    }
-    Timer {
-        id: deleteConfirmTimer
-        interval: 5000
-        onTriggered: root.confirmDelete = false
     }
 }

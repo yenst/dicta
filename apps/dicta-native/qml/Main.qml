@@ -62,6 +62,10 @@ ApplicationWindow {
         return value.indexOf("file://") === 0 ? value.substring(7) : value
     }
 
+    function linkProjectFolder(folderUrl) {
+        return bridge.addProject(pathFromFolderUrl(folderUrl))
+    }
+
     function cleanupMergedVideos() {
         return bridge.cleanupMergedVideos()
     }
@@ -109,6 +113,13 @@ ApplicationWindow {
             && !globalSearch.activeFocus && !detailPage.noteEditorFocused
     }
 
+    function restoreKeyboardFocus(column) {
+        if (column !== undefined)
+            navigationColumn = Math.max(0, Math.min(2, Number(column)))
+        if (keyboardNavigationEnabled())
+            keyboardFocus.forceActiveFocus()
+    }
+
     function moveNavigationColumn(delta) {
         navigationColumn = Math.max(0, Math.min(showingDetail ? 2 : 1,
             navigationColumn + delta))
@@ -148,12 +159,12 @@ ApplicationWindow {
             detailPage.togglePlayback()
         else if (event.key === Qt.Key_C && showingDetail)
             detailPage.copyContext()
-        else if (event.key === Qt.Key_Delete && showingDetail)
-            detailPage.promptDelete()
+        else if (event.key === Qt.Key_Delete && showingDetail) {
+            if (!recordingPanel.requestDelete() && root.recording)
+                bridge.showToast("Stop recording before deleting")
+        }
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (detailPage.confirmDelete)
-                detailPage.confirmDeleteNow()
-            else if (navigationColumn === 0)
+            if (navigationColumn === 0)
                 projectRail.activateKeyboardSelection()
             else if (navigationColumn === 1)
                 recordingPanel.activateKeyboardSelection()
@@ -206,6 +217,9 @@ ApplicationWindow {
         function onSelectedRecordingChanged() { root.autoSelecting = false }
     }
 
+    onActiveChanged: if (active)
+        Qt.callLater(function() { root.restoreKeyboardFocus() })
+
     Timer {
         interval: 1000
         repeat: true
@@ -243,7 +257,8 @@ ApplicationWindow {
             settingsActive: root.settingsOpen
             keyboardFocused: root.navigationColumn === 0 && !root.settingsOpen
             onSettingsRequested: root.settingsOpen = true
-            onAddProjectRequested: createProjectDialog.open()
+            onAddProjectRequested: linkProjectFolderDialog.open()
+            onKeyboardFocusRequested: root.restoreKeyboardFocus(0)
         }
 
         Rectangle {
@@ -416,16 +431,6 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             spacing: 7 * root.dictaTheme.spacingScale
                             FlatButton {
-                                objectName: "projectPathBadge"
-                                visible: Boolean(root.bridge.currentProject.path)
-                                Layout.maximumWidth: 340 * root.dictaTheme.spacingScale
-                                dictaTheme: root.dictaTheme
-                                text: root.bridge.currentProject.path || ""
-                                iconName: "folder"
-                                toolTip: "Copy project path"
-                                onClicked: root.bridge.copyText(root.bridge.currentProject.path || "")
-                            }
-                            FlatButton {
                                 objectName: "projectBranchBadge"
                                 visible: Boolean(root.bridge.currentProject.branch)
                                 dictaTheme: root.dictaTheme
@@ -542,6 +547,7 @@ ApplicationWindow {
                     dictaTheme: root.dictaTheme
                     filterText: globalSearch.text
                     keyboardFocused: root.navigationColumn === 1 && !root.settingsOpen
+                    onKeyboardFocusRequested: root.restoreKeyboardFocus(1)
                 }
 
                 Rectangle {
@@ -561,7 +567,9 @@ ApplicationWindow {
                     bridge: root.bridge
                     dictaTheme: root.dictaTheme
                     keyboardActive: root.navigationColumn === 2 && !root.settingsOpen
-                    onKeyboardFocusRequested: keyboardFocus.forceActiveFocus()
+                    onKeyboardFocusRequested: root.restoreKeyboardFocus(2)
+                    onContextCopied: root.bridge.showToast("Recording ID copied")
+                    onDeleteRequested: recordingPanel.requestDelete()
                 }
 
                 Item {
@@ -611,7 +619,7 @@ ApplicationWindow {
                 root.compactProjectsOpen = false
                 root.settingsOpen = true
             }
-            onAddProjectRequested: createProjectDialog.open()
+            onAddProjectRequested: linkProjectFolderDialog.open()
         }
     }
 
@@ -1267,41 +1275,15 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
-        id: createProjectDialog
-        title: "Create project"
-        modal: true
-        anchors.centerIn: parent
-        standardButtons: Dialog.Ok | Dialog.Cancel
+    FolderDialog {
+        id: linkProjectFolderDialog
+        objectName: "linkProjectFolderDialog"
+        title: "Choose a Git repository to link"
         onAccepted: {
-            if (projectName.text.trim().length)
-                root.bridge.createProject(projectName.text.trim())
-            projectName.text = ""
+            root.linkProjectFolder(selectedFolder)
+            Qt.callLater(function() { root.restoreKeyboardFocus(0) })
         }
-        contentItem: ColumnLayout {
-            spacing: 8 * root.dictaTheme.spacingScale
-            Text {
-                text: "Create a standalone Dicta project"
-                color: root.dictaTheme.foreground
-                font.family: root.dictaTheme.fontFamily
-                font.pixelSize: root.dictaTheme.baseFontSize
-            }
-            TextField {
-                id: projectName
-                Layout.preferredWidth: 360 * root.dictaTheme.spacingScale
-                placeholderText: "Project name"
-                color: root.dictaTheme.foreground
-                placeholderTextColor: root.dictaTheme.darkForeground
-                font.family: root.dictaTheme.fontFamily
-                font.pixelSize: root.dictaTheme.baseFontSize
-            }
-        }
-        background: Rectangle {
-            color: root.dictaTheme.darkBackground
-            border.width: 1
-            border.color: root.dictaTheme.accent
-            radius: 4 * root.dictaTheme.spacingScale
-        }
+        onRejected: Qt.callLater(function() { root.restoreKeyboardFocus(0) })
     }
 
     FolderDialog {

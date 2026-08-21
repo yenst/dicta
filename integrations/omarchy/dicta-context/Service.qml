@@ -18,6 +18,8 @@ Item {
   property string requestedProjectId: ""
   property string stateOutput: ""
   property string stateError: ""
+  property string recordingsOutput: ""
+  property string recordingsError: ""
   property string copyError: ""
   property string projectError: ""
   property string recordError: ""
@@ -58,8 +60,11 @@ Item {
         dictaRunning = false
       }
     }
-    if (dictaRunning && (!wasRunning || wasRecording !== recordingActive))
+    if (dictaRunning && !stateProcess.running && !recordingsProcess.running
+        && (refreshQueued || !wasRunning || wasRecording !== recordingActive)) {
+      refreshQueued = false
       Qt.callLater(function() { root.refresh(root.selectedProjectId) })
+    }
     if (!dictaRunning) {
       loading = false
       projects = []
@@ -71,10 +76,12 @@ Item {
     if (projectId !== undefined && String(projectId || "") !== "")
       requestedProjectId = String(projectId)
     if (!dictaRunning) {
+      refreshQueued = true
+      checkDictaRunning()
       loading = false
       return
     }
-    if (stateProcess.running) {
+    if (stateProcess.running || recordingsProcess.running) {
       refreshQueued = true
       return
     }
@@ -95,46 +102,31 @@ Item {
       try {
         var payload = JSON.parse(stateOutput || "{}")
         var data = payload && payload.data instanceof Array ? payload.data : []
-        if (refreshPhase === "projects") {
-          projects = data
-          var selected = requestedProjectId
-          if (selected === "") {
-            for (var i = 0; i < projects.length; i++) {
-              if (projects[i] && projects[i].selected) {
-                selected = String(projects[i].id || "")
-                break
-              }
+        projects = data
+        var selected = requestedProjectId
+        if (selected === "") {
+          for (var i = 0; i < projects.length; i++) {
+            if (projects[i] && projects[i].selected) {
+              selected = String(projects[i].id || "")
+              break
             }
           }
-          selectedProjectId = selected
-          requestedProjectId = ""
-          if (selectedProjectId === "") {
-            contexts = []
-            loading = false
-          } else {
-            stateOutput = ""
-            stateError = ""
-            refreshPhase = "recordings"
-            stateProcess.command = [
-              dictaCommand, "--no-start", "--json", "recording", "list",
-              "--project", selectedProjectId, "--limit", "3"
-            ]
-            stateProcess.running = true
-            return
-          }
-        } else {
+        }
+        selectedProjectId = selected
+        requestedProjectId = ""
+        if (selectedProjectId === "") {
           contexts = []
-          for (var j = 0; j < data.length; j++) {
-            var recording = data[j] || {}
-            contexts.push({
-              id: String(recording.id || ""),
-              projectId: String(recording.project || selectedProjectId),
-              branch: String(recording.branch || ""),
-              title: String(recording.note || recording.transcript_preview || recording.id || "Untitled recording"),
-              startedAt: String(recording.started_at || "")
-            })
-          }
           loading = false
+        } else {
+          recordingsOutput = ""
+          recordingsError = ""
+          refreshPhase = "recordings"
+          recordingsProcess.command = [
+            dictaCommand, "--no-start", "--json", "recording", "list",
+            "--project", selectedProjectId, "--limit", "3"
+          ]
+          recordingsProcess.running = true
+          return
         }
       } catch (parseError) {
         loading = false
@@ -147,10 +139,50 @@ Item {
     }
   }
 
+  function finishRecordingsRefresh(exitCode) {
+    if (Number(exitCode) !== 0) {
+      loading = false
+      error = recordingsError.trim() || "Dicta recordings are unavailable."
+    } else {
+      try {
+        var payload = JSON.parse(recordingsOutput || "{}")
+        var data = payload && payload.data instanceof Array ? payload.data : []
+        var nextContexts = []
+        for (var i = 0; i < data.length; i++) {
+          var recording = data[i] || {}
+          nextContexts.push({
+            id: String(recording.id || ""),
+            projectId: String(recording.project || selectedProjectId),
+            branch: String(recording.branch || ""),
+            title: String(recording.note || recording.transcript_preview || recording.id || "Untitled recording"),
+            startedAt: String(recording.started_at || "")
+          })
+        }
+        contexts = nextContexts
+        loading = false
+      } catch (parseError) {
+        loading = false
+        error = "Dicta returned invalid recording data."
+      }
+    }
+    if (refreshQueued) {
+      refreshQueued = false
+      Qt.callLater(function() { root.refresh(root.selectedProjectId) })
+    }
+  }
+
   function openProject(projectId) {
     if (projectProcess.running) return
     var id = String(projectId || "")
     if (id === "") return
+    if (recordingActive) {
+      selectedProjectId = id
+      requestedProjectId = id
+      actionStatus = "BROWSING PROJECT"
+      actionClear.restart()
+      refresh(id)
+      return
+    }
     pendingProjectId = id
     projectError = ""
     actionStatus = "SELECTING PROJECT"
@@ -263,6 +295,22 @@ Item {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.stateError = text
+    }
+  }
+
+  Process {
+    id: recordingsProcess
+    running: false
+    onExited: function(exitCode) {
+      Qt.callLater(function() { root.finishRecordingsRefresh(exitCode) })
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.recordingsOutput = text
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.recordingsError = text
     }
   }
 

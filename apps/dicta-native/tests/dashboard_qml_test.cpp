@@ -8,7 +8,10 @@
 #include <QQmlEngine>
 #include <QScopedPointer>
 #include <QTest>
+#include <QUrl>
 #include <QVariantList>
+
+#include <utility>
 
 #include "theme_icon_provider.h"
 
@@ -86,10 +89,15 @@ public:
     int annotationClearCalls = 0;
     int refreshCalls = 0;
     int projectSelectCalls = 0;
-    int createProjectCalls = 0;
+    int recordingProjectSelectCalls = 0;
+    int removeProjectCalls = 0;
+    int addProjectCalls = 0;
+    QString addedProjectPath;
     int copyCalls = 0;
     int copyTextCalls = 0;
     QString copiedText;
+    int toastCalls = 0;
+    QString toastMessage;
     int revealCalls = 0;
     int openCalls = 0;
     int settingCalls = 0;
@@ -114,6 +122,12 @@ public:
     {
         ++stopCalls;
         return true;
+    }
+
+    Q_INVOKABLE void showToast(const QString &message)
+    {
+        ++toastCalls;
+        toastMessage = message;
     }
 
     Q_INVOKABLE bool setAnnotationsEnabled(const bool enabled)
@@ -162,20 +176,60 @@ public:
     Q_INVOKABLE bool selectProject(const QString &projectId)
     {
         ++projectSelectCalls;
-        currentProject = QVariantMap {
-            {QStringLiteral("id"), projectId},
-            {QStringLiteral("name"), projectId},
-            {QStringLiteral("selected"), true},
-        };
+        for (QVariant &entry : projects) {
+            QVariantMap project = entry.toMap();
+            const bool selected = project.value(QStringLiteral("id")).toString()
+                == projectId;
+            project.insert(QStringLiteral("selected"), selected);
+            entry = project;
+            if (selected) {
+                currentProject = project;
+            }
+        }
         emit changed();
         emit dashboardChanged();
         return true;
     }
 
-    Q_INVOKABLE bool createProject(const QString &name)
+    Q_INVOKABLE bool selectRecordingProject(const QString &projectId)
     {
-        ++createProjectCalls;
-        return !name.trimmed().isEmpty();
+        ++recordingProjectSelectCalls;
+        for (QVariant &entry : projects) {
+            QVariantMap project = entry.toMap();
+            const bool selected = project.value(QStringLiteral("id")).toString()
+                == projectId;
+            project.insert(QStringLiteral("selected"), selected);
+            project.insert(QStringLiteral("recordingSelected"), selected);
+            entry = project;
+            if (selected) {
+                currentProject = project;
+            }
+        }
+        emit changed();
+        emit dashboardChanged();
+        return true;
+    }
+
+    Q_INVOKABLE bool removeProject(const QString &projectId)
+    {
+        ++removeProjectCalls;
+        QVariantList remaining;
+        for (const QVariant &entry : std::as_const(projects)) {
+            if (entry.toMap().value(QStringLiteral("id")).toString() != projectId) {
+                remaining.append(entry);
+            }
+        }
+        projects = remaining;
+        emit changed();
+        emit dashboardChanged();
+        return true;
+    }
+
+    Q_INVOKABLE bool addProject(const QString &path)
+    {
+        ++addProjectCalls;
+        addedProjectPath = path;
+        return !path.trimmed().isEmpty();
     }
 
     Q_INVOKABLE bool selectRecording(const QString &recordingId)
@@ -634,6 +688,10 @@ void DashboardQmlTest::detailActionsRequireConfirmationAndUseSupportedCommands()
 {
     DashboardBridge bridge;
     DashboardTheme theme;
+    bridge.recentRecordings = QVariantList {
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("demo-002")},
+                     {QStringLiteral("transcription"), QStringLiteral("complete")}},
+    };
     bridge.selectRecording(QStringLiteral("demo-002"));
     QQmlEngine engine;
     QQmlComponent component = dashboardComponent(engine);
@@ -641,14 +699,23 @@ void DashboardQmlTest::detailActionsRequireConfirmationAndUseSupportedCommands()
     QVERIFY2(dashboard, qPrintable(component.errorString()));
     QObject *transcribe = dashboard->findChild<QObject *>(QStringLiteral("transcribeRecording"));
     QObject *remove = dashboard->findChild<QObject *>(QStringLiteral("deleteRecording"));
+    QObject *panel = dashboard->findChild<QObject *>(QStringLiteral("recordingPanel"));
     QVERIFY(transcribe != nullptr);
     QVERIFY(remove != nullptr);
+    QVERIFY(panel != nullptr);
+    QVERIFY(!panel->property("deleteActionVisible").toBool());
 
     QVERIFY(QMetaObject::invokeMethod(transcribe, "clicked"));
     QCOMPARE(bridge.transcribeCalls, 1);
     QVERIFY(QMetaObject::invokeMethod(remove, "clicked"));
     QCOMPARE(bridge.deleteCalls, 0);
-    QVERIFY(QMetaObject::invokeMethod(remove, "clicked"));
+    QCOMPARE(panel->property("pendingDeleteId").toString(), QStringLiteral("demo-002"));
+    QVERIFY(panel->property("deleteActionVisible").toBool());
+    QVariant removed;
+    QVERIFY(QMetaObject::invokeMethod(
+        panel, "requestDelete", Q_RETURN_ARG(QVariant, removed)
+    ));
+    QVERIFY(removed.toBool());
     QCOMPARE(bridge.deleteCalls, 1);
 }
 
@@ -766,8 +833,6 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QTRY_VERIFY(window->isVisible());
     window->requestActivate();
     QTRY_VERIFY(window->isActive());
-    QObject *pathBadge = dashboard->findChild<QObject *>(
-        QStringLiteral("projectPathBadge"));
     QObject *branchBadge = dashboard->findChild<QObject *>(
         QStringLiteral("projectBranchBadge"));
     QObject *recordingBorder = dashboard->findChild<QObject *>(
@@ -776,7 +841,6 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
         QStringLiteral("recordingDetailPage"));
     QObject *detailBorder = dashboard->findChild<QObject *>(
         QStringLiteral("detailKeyboardBorder"));
-    QVERIFY(pathBadge != nullptr);
     QVERIFY(branchBadge != nullptr);
     QVERIFY(recordingBorder != nullptr);
     QVERIFY(detail != nullptr);
@@ -784,8 +848,7 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QVERIFY(recordingBorder->property("visible").toBool());
     QVERIFY(!detailBorder->property("visible").toBool());
 
-    QVERIFY(QMetaObject::invokeMethod(pathBadge, "clicked"));
-    QCOMPARE(bridge.copiedText, QStringLiteral("/home/jihmy/Projects/dicta"));
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("projectPathBadge")) == nullptr);
     QVERIFY(QMetaObject::invokeMethod(branchBadge, "clicked"));
     QCOMPARE(bridge.copiedText, QStringLiteral("main"));
 
@@ -793,6 +856,8 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QTRY_COMPARE(bridge.selectedRecordingId, QStringLiteral("second"));
     QTest::keyClick(window, Qt::Key_C);
     QCOMPARE(bridge.copyCalls, 1);
+    QCOMPARE(bridge.toastCalls, 1);
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Recording ID copied"));
 
     QTest::keyClick(window, Qt::Key_Right);
     QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
@@ -808,6 +873,22 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QTest::keyClick(window, Qt::Key_Return);
     QCOMPARE(bridge.copyCalls, 2);
 
+    QTest::keyClick(window, Qt::Key_Right);
+    QCOMPARE(detail->property("keyboardTarget").toInt(), 2);
+    QTest::keyClick(window, Qt::Key_Return);
+    QObject *actionPopup = dashboard->findChild<QObject *>(
+        QStringLiteral("recordingActionPopup"));
+    QVERIFY(actionPopup != nullptr);
+    QTRY_VERIFY(actionPopup->property("opened").toBool());
+    QCOMPARE(detail->property("actionIndex").toInt(), 0);
+    QTest::keyClick(window, Qt::Key_Down);
+    QCOMPARE(detail->property("actionIndex").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Down);
+    QCOMPARE(detail->property("actionIndex").toInt(), 2);
+    QTest::keyClick(window, Qt::Key_Return);
+    QCOMPARE(bridge.revealCalls, 1);
+    QTRY_VERIFY(!actionPopup->property("opened").toBool());
+
     QTest::keyClick(window, Qt::Key_Down);
     QCOMPARE(detail->property("keyboardTarget").toInt(), 3);
     QTest::keyClick(window, Qt::Key_Right);
@@ -821,7 +902,10 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
 
     QTest::keyClick(window, Qt::Key_Delete);
     QCOMPARE(bridge.deleteCalls, 0);
-    QTest::keyClick(window, Qt::Key_Return);
+    QObject *panel = dashboard->findChild<QObject *>(QStringLiteral("recordingPanel"));
+    QVERIFY(panel != nullptr);
+    QCOMPARE(panel->property("pendingDeleteId").toString(), QStringLiteral("second"));
+    QTest::keyClick(window, Qt::Key_Delete);
     QCOMPARE(bridge.deleteCalls, 1);
 }
 
@@ -832,7 +916,8 @@ void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
     bridge.projects = QVariantList {
         QVariantMap {{QStringLiteral("id"), QStringLiteral("dicta")},
                      {QStringLiteral("name"), QStringLiteral("dicta")},
-                     {QStringLiteral("selected"), true}},
+                     {QStringLiteral("selected"), true},
+                     {QStringLiteral("recordingSelected"), true}},
         QVariantMap {{QStringLiteral("id"), QStringLiteral("peepel")},
                      {QStringLiteral("name"), QStringLiteral("peepel")}},
         QVariantMap {{QStringLiteral("id"), QStringLiteral("__unprojected__")},
@@ -850,7 +935,10 @@ void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
     window->requestActivate();
     QTRY_VERIFY(window->isActive());
     QObject *rail = dashboard->findChild<QObject *>(QStringLiteral("projectRail"));
+    QObject *linkDialog = dashboard->findChild<QObject *>(
+        QStringLiteral("linkProjectFolderDialog"));
     QVERIFY(rail != nullptr);
+    QVERIFY(linkDialog != nullptr);
 
     QTest::keyClick(window, Qt::Key_Left);
     QCOMPARE(dashboard->property("navigationColumn").toInt(), 0);
@@ -860,6 +948,23 @@ void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
     QTest::keyClick(window, Qt::Key_Return);
     QCOMPARE(bridge.currentProject.value(QStringLiteral("id")).toString(),
              QStringLiteral("__unprojected__"));
+    QCOMPARE(bridge.recordingProjectSelectCalls, 0);
+    QVariant destinationSelected;
+    QVERIFY(QMetaObject::invokeMethod(
+        rail, "activateRecordingSelection",
+        Q_RETURN_ARG(QVariant, destinationSelected)
+    ));
+    QVERIFY(destinationSelected.toBool());
+    QCOMPARE(bridge.recordingProjectSelectCalls, 1);
+
+    QVariant linked;
+    QVERIFY(QMetaObject::invokeMethod(
+        dashboard.get(), "linkProjectFolder", Q_RETURN_ARG(QVariant, linked),
+        Q_ARG(QVariant, QVariant(QStringLiteral("file:///tmp/linked-repository")))
+    ));
+    QVERIFY(linked.toBool());
+    QCOMPARE(bridge.addProjectCalls, 1);
+    QCOMPARE(bridge.addedProjectPath, QStringLiteral("/tmp/linked-repository"));
 }
 
 void DashboardQmlTest::settingsCloseWithEscapeAndLeftArrow()

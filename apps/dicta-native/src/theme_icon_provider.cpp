@@ -37,6 +37,7 @@ QStringList candidates(const QString &name)
         {QStringLiteral("delete"), {QStringLiteral("edit-delete-symbolic"), QStringLiteral("edit-delete")}},
         {QStringLiteral("record"), {QStringLiteral("media-record-symbolic"), QStringLiteral("media-record")}},
         {QStringLiteral("microphone"), {QStringLiteral("audio-input-microphone-symbolic"), QStringLiteral("audio-input-microphone")}},
+        {QStringLiteral("check"), {QStringLiteral("object-select-symbolic"), QStringLiteral("emblem-ok-symbolic")}},
     };
     return aliases.value(name, {name});
 }
@@ -70,6 +71,7 @@ QString fallbackAsset(const QString &name)
         {QStringLiteral("delete"), QStringLiteral("/usr/share/icons/Adwaita/symbolic/actions/edit-delete-symbolic.svg")},
         {QStringLiteral("record"), QStringLiteral("/usr/share/icons/Adwaita/symbolic/actions/media-record-symbolic.svg")},
         {QStringLiteral("microphone"), QStringLiteral("/usr/share/icons/Adwaita/symbolic/devices/audio-input-microphone-symbolic.svg")},
+        {QStringLiteral("check"), QStringLiteral("/usr/share/icons/Adwaita/symbolic/actions/object-select-symbolic.svg")},
     };
     return assets.value(name);
 }

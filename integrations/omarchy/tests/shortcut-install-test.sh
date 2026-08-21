@@ -29,8 +29,10 @@ grep -Fxq 'o.bind("F8", "Draw Dicta annotation (hold)", "dicta annotate enable")
 grep -Fxq 'o.bind("F8", nil, "dicta annotate disable", { release = true })' \
   "$fixture/config/hypr/dicta-bindings.lua"
 grep -Fq 'title = "^Dicta Annotation Overlay$"' "$fixture/config/hypr/dicta-bindings.lua"
-grep -Fq 'title = "^Dicta Annotation Helper$"' "$fixture/config/hypr/dicta-bindings.lua"
+! grep -Fq 'title = "^Dicta Annotation Helper$"' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fq 'title = "^Dicta status$"' "$fixture/config/hypr/dicta-bindings.lua"
 grep -Fq 'float = true' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fq 'monitor_h-window_h-34' "$fixture/config/hypr/dicta-bindings.lua"
 [[ "$(find "$fixture/config/hypr" -maxdepth 1 -type f -name 'bindings.lua.dicta-backup.*' | wc -l)" -ge 1 ]]
 
 XDG_CONFIG_HOME="$fixture/config" \

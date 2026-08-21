@@ -69,6 +69,9 @@ public:
     Q_INVOKABLE [[nodiscard]] bool clearAnnotations();
     Q_INVOKABLE [[nodiscard]] bool refreshDashboard();
     Q_INVOKABLE [[nodiscard]] bool selectProject(const QString &projectId);
+    Q_INVOKABLE [[nodiscard]] bool selectRecordingProject(const QString &projectId);
+    Q_INVOKABLE [[nodiscard]] bool removeProject(const QString &projectId);
+    Q_INVOKABLE [[nodiscard]] bool addProject(const QString &path);
     Q_INVOKABLE [[nodiscard]] bool createProject(const QString &name);
     Q_INVOKABLE [[nodiscard]] bool selectRecording(const QString &recordingId);
     Q_INVOKABLE void closeRecording();
@@ -81,6 +84,7 @@ public:
     Q_INVOKABLE [[nodiscard]] bool cancelVoiceNote();
     Q_INVOKABLE [[nodiscard]] bool copySelectedContext();
     Q_INVOKABLE [[nodiscard]] bool copyText(const QString &text);
+    Q_INVOKABLE void showToast(const QString &message);
     Q_INVOKABLE [[nodiscard]] bool revealSelectedRecording();
     Q_INVOKABLE [[nodiscard]] bool openSelectedRecording();
     Q_INVOKABLE [[nodiscard]] bool setShortcut(const QString &shortcutId);

@@ -13,15 +13,13 @@ Omarchy shell:
 - Use Space or Enter for the row's quick action. Right Arrow opens Dicta after
   selecting the focused project, or opens the general Dicta UI for a recording.
   Copy success is shown inline.
-- Open Dicta from the panel header. The bar stays to one Dicta icon: click its
-  small white recording dot to start or stop recording.
-- The bar icon is present only while a Dicta process is running and disappears
-  within about a second after Dicta exits.
+- Open Dicta from the panel header. The bar stays to one Dicta icon; left click
+  opens this panel, middle click refreshes it, and right click opens Dicta.
 
 The QML plugin is intentionally thin. It talks only to the native `dicta` CLI:
 passive refreshes use `--no-start --json` project/recording reads, project rows
-run typed `project select` before `dicta ui`, context copy uses `context ...
---copy`, and the record dot uses `record toggle`. Every command is an argv list;
+run typed `project select` before `dicta ui`, and context copy uses `context ...
+--copy`. Every command is an argv list;
 the plugin has no shell pipeline, MCP helper, service, port, or separate store.
 
 Recording rows use the persisted note (then transcript preview or ID) as their

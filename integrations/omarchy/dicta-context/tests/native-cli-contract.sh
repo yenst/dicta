@@ -31,16 +31,30 @@ String(recording.note || recording.transcript_preview || recording.id || "Untitl
 String(recording.started_at || "")
 CONTRACTS
 
-for input_contract in 'interactive: false' 'id: barActionArea' 'service.toggleRecording()'; do
+for input_contract in 'interactive: false' 'id: barActionArea' 'root.toggle()'; do
   grep -Fq -- "$input_contract" "$panel" || {
     echo "Native recording input contract missing: $input_contract" >&2
     exit 1
   }
 done
 
-for state_contract in 'visible: service.recordingActive' 'property bool recordingActive: false'; do
+for project_contract in 'return leftGeneral ? -1 : 1' 'visible: !projectRow.general' 'project && Boolean(project.selected)'; do
+  grep -Fq -- "$project_contract" "$panel" || {
+    echo "Project presentation contract missing: $project_contract" >&2
+    exit 1
+  }
+done
+
+for state_contract in 'property bool recordingActive: false' 'if (recordingActive) {'; do
   grep -Fq -- "$state_contract" "$panel" "$service" || {
     echo "Native recording-state contract missing: $state_contract" >&2
+    exit 1
+  }
+done
+
+for refresh_contract in 'id: stateProcess' 'id: recordingsProcess' 'root.finishRecordingsRefresh(exitCode)'; do
+  grep -Fq -- "$refresh_contract" "$service" || {
+    echo "Two-stage refresh contract missing: $refresh_contract" >&2
     exit 1
   }
 done
