@@ -88,6 +88,8 @@ public:
     int projectSelectCalls = 0;
     int createProjectCalls = 0;
     int copyCalls = 0;
+    int copyTextCalls = 0;
+    QString copiedText;
     int revealCalls = 0;
     int openCalls = 0;
     int settingCalls = 0;
@@ -258,6 +260,13 @@ public:
     {
         ++copyCalls;
         return true;
+    }
+
+    Q_INVOKABLE bool copyText(const QString &text)
+    {
+        ++copyTextCalls;
+        copiedText = text;
+        return !text.isEmpty();
     }
 
     Q_INVOKABLE bool revealSelectedRecording()
@@ -454,10 +463,15 @@ private slots:
     void idleDashboardRendersRecentRecordingAndStartsWithNote();
     void recordingDashboardInvokesStop();
     void recentSelectionShowsLazyDetailAndBackReturnsToCapture();
+    void multimediaDetailInstantiatesTheNativePlayer();
+    void multimediaPlayerTracksTheSelectedRecording();
     void detailActionsRequireConfirmationAndUseSupportedCommands();
     void timelineNotesUseThePlaybackCursorAndTypedBridge();
-    void narrowRecordingAnnotationControlsAreKeyboardAccessible();
+    void recordingSurfaceDoesNotExposeAnnotationToolbar();
     void filterShortcutOpensTheContextSearch();
+    void keyboardNavigationSelectsCopiesAndDeletes();
+    void projectKeyboardNavigationKeepsGeneralFirst();
+    void settingsCloseWithEscapeAndLeftArrow();
     void settingsControlsUpdateTheTypedNativeBridge();
     void visualQaCapture();
 };
@@ -503,24 +517,19 @@ void DashboardQmlTest::idleDashboardRendersRecentRecordingAndStartsWithNote()
     QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
     QVERIFY2(dashboard, qPrintable(component.errorString()));
     QObject *list = dashboard->findChild<QObject *>(QStringLiteral("recentRecordingsList"));
-    QObject *note = dashboard->findChild<QObject *>(QStringLiteral("sessionNote"));
-    QObject *toggle = dashboard->findChild<QObject *>(QStringLiteral("recordToggle"));
     QVERIFY(list != nullptr);
-    QVERIFY(note != nullptr);
-    QVERIFY(toggle != nullptr);
-    QObject *annotationControls = dashboard->findChild<QObject *>(
-        QStringLiteral("annotationControls")
-    );
-    QVERIFY(annotationControls != nullptr);
-    QVERIFY(!annotationControls->property("visible").toBool());
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("sessionNote")) == nullptr);
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("recordToggle")) == nullptr);
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("annotationControls")) == nullptr);
     QCOMPARE(list->property("count").toInt(), 1);
 
-    note->setProperty("text", QStringLiteral("Explain the native library"));
-    QVERIFY(QMetaObject::invokeMethod(toggle, "clicked"));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
 
     QCOMPARE(bridge.startCalls, 1);
     QCOMPARE(bridge.stopCalls, 0);
-    QCOMPARE(bridge.submittedNote, QStringLiteral("Explain the native library"));
+    QCOMPARE(bridge.submittedNote, QString());
 }
 
 void DashboardQmlTest::recordingDashboardInvokesStop()
@@ -534,10 +543,9 @@ void DashboardQmlTest::recordingDashboardInvokesStop()
     QVERIFY2(component.isReady(), qPrintable(component.errorString()));
     QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
     QVERIFY2(dashboard, qPrintable(component.errorString()));
-    QObject *toggle = dashboard->findChild<QObject *>(QStringLiteral("recordToggle"));
-    QVERIFY(toggle != nullptr);
-
-    QVERIFY(QMetaObject::invokeMethod(toggle, "clicked"));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
 
     QCOMPARE(bridge.startCalls, 0);
     QCOMPARE(bridge.stopCalls, 1);
@@ -575,6 +583,51 @@ void DashboardQmlTest::recentSelectionShowsLazyDetailAndBackReturnsToCapture()
     QVERIFY(QMetaObject::invokeMethod(back, "clicked"));
     QCOMPARE(bridge.closeCalls, 1);
     QTRY_VERIFY(!detail->property("visible").toBool());
+}
+
+void DashboardQmlTest::multimediaDetailInstantiatesTheNativePlayer()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.multimediaAvailable = true;
+    bridge.selectRecording(QStringLiteral("demo-player"));
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    QObject *loader = dashboard->findChild<QObject *>(QStringLiteral("recordingPlayerLoader"));
+    QVERIFY(loader != nullptr);
+    QTRY_VERIFY(loader->property("active").toBool());
+    QTRY_VERIFY(loader->property("item").value<QObject *>() != nullptr);
+}
+
+void DashboardQmlTest::multimediaPlayerTracksTheSelectedRecording()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.multimediaAvailable = true;
+    bridge.selectRecording(QStringLiteral("first-recording"));
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    QObject *player = dashboard->findChild<QObject *>(QStringLiteral("recordingPlayer"));
+    QVERIFY(player != nullptr);
+    QTRY_COMPARE(
+        player->property("source").toUrl(),
+        QUrl(QStringLiteral("file:///tmp/fake.mp4"))
+    );
+
+    bridge.selectedRecording.insert(
+        QStringLiteral("video_url"),
+        QStringLiteral("file:///tmp/second-recording.mp4")
+    );
+    emit bridge.changed();
+
+    QTRY_COMPARE(
+        player->property("source").toUrl(),
+        QUrl(QStringLiteral("file:///tmp/second-recording.mp4"))
+    );
 }
 
 void DashboardQmlTest::detailActionsRequireConfirmationAndUseSupportedCommands()
@@ -639,7 +692,7 @@ void DashboardQmlTest::timelineNotesUseThePlaybackCursorAndTypedBridge()
     QCOMPARE(bridge.voiceCancelCalls, 1);
 }
 
-void DashboardQmlTest::narrowRecordingAnnotationControlsAreKeyboardAccessible()
+void DashboardQmlTest::recordingSurfaceDoesNotExposeAnnotationToolbar()
 {
     DashboardBridge bridge;
     DashboardTheme theme;
@@ -655,41 +708,9 @@ void DashboardQmlTest::narrowRecordingAnnotationControlsAreKeyboardAccessible()
     QVERIFY(window != nullptr);
     QTRY_VERIFY(window->isVisible());
 
-    QObject *controls = dashboard->findChild<QObject *>(QStringLiteral("annotationControls"));
-    QObject *toggle = dashboard->findChild<QObject *>(QStringLiteral("annotationToggle"));
-    QObject *spotlight = dashboard->findChild<QObject *>(
-        QStringLiteral("annotationToolSpotlight")
-    );
-    QObject *undo = dashboard->findChild<QObject *>(QStringLiteral("annotationUndo"));
-    QObject *clear = dashboard->findChild<QObject *>(QStringLiteral("annotationClear"));
-    QVERIFY(controls != nullptr);
-    QVERIFY(toggle != nullptr);
-    QVERIFY(spotlight != nullptr);
-    QVERIFY(undo != nullptr);
-    QVERIFY(clear != nullptr);
-    QVERIFY(controls->property("visible").toBool());
-    QVERIFY(!spotlight->property("enabled").toBool());
-
-    QVERIFY(QMetaObject::invokeMethod(toggle, "forceActiveFocus"));
-    QTest::keyClick(window, Qt::Key_Space);
-    QTRY_COMPARE(bridge.annotationEnableCalls, 1);
-    QTRY_VERIFY(spotlight->property("enabled").toBool());
-
-    QVERIFY(QMetaObject::invokeMethod(spotlight, "forceActiveFocus"));
-    QTest::keyClick(window, Qt::Key_Space);
-    QTRY_COMPARE(bridge.annotationToolCalls, 1);
-    QCOMPARE(bridge.requestedAnnotationTool, QStringLiteral("spotlight"));
-
-    QVERIFY(QMetaObject::invokeMethod(undo, "forceActiveFocus"));
-    QTest::keyClick(window, Qt::Key_Space);
-    QTRY_COMPARE(bridge.annotationUndoCalls, 1);
-    QVERIFY(QMetaObject::invokeMethod(clear, "forceActiveFocus"));
-    QTest::keyClick(window, Qt::Key_Space);
-    QTRY_COMPARE(bridge.annotationClearCalls, 1);
-
-    QVERIFY(QMetaObject::invokeMethod(toggle, "forceActiveFocus"));
-    QTest::keyClick(window, Qt::Key_Space);
-    QTRY_COMPARE(bridge.annotationDisableCalls, 1);
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("annotationControls")) == nullptr);
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("annotationToggle")) == nullptr);
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("annotationToolSpotlight")) == nullptr);
 }
 
 void DashboardQmlTest::filterShortcutOpensTheContextSearch()
@@ -705,11 +726,162 @@ void DashboardQmlTest::filterShortcutOpensTheContextSearch()
     window->show();
     QTRY_VERIFY(window->isVisible());
     QObject *panel = dashboard->findChild<QObject *>(QStringLiteral("recordingPanel"));
+    QObject *search = dashboard->findChild<QObject *>(QStringLiteral("globalSearchField"));
     QVERIFY(panel != nullptr);
-    QVERIFY(!panel->property("filterVisible").toBool());
+    QVERIFY(search != nullptr);
+    QVERIFY(!search->property("activeFocus").toBool());
+    QCOMPARE(dashboard->property("searchExpanded").toBool(), false);
 
     QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
-    QTRY_VERIFY(panel->property("filterVisible").toBool());
+    QTRY_VERIFY(search->property("activeFocus").toBool());
+    QCOMPARE(dashboard->property("searchExpanded").toBool(), true);
+    search->setProperty("text", QStringLiteral("needle"));
+    QTRY_COMPARE(panel->property("filterText").toString(), QStringLiteral("needle"));
+}
+
+void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.currentProject = QVariantMap {
+        {QStringLiteral("id"), QStringLiteral("dicta")},
+        {QStringLiteral("name"), QStringLiteral("dicta")},
+        {QStringLiteral("path"), QStringLiteral("/home/jihmy/Projects/dicta")},
+        {QStringLiteral("branch"), QStringLiteral("main")},
+    };
+    bridge.recentRecordings = QVariantList {
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("first")},
+                     {QStringLiteral("transcription"), QStringLiteral("complete")}},
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("second")},
+                     {QStringLiteral("transcription"), QStringLiteral("complete")}},
+    };
+    bridge.selectRecording(QStringLiteral("first"));
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    QTRY_VERIFY(window->isVisible());
+    window->requestActivate();
+    QTRY_VERIFY(window->isActive());
+    QObject *pathBadge = dashboard->findChild<QObject *>(
+        QStringLiteral("projectPathBadge"));
+    QObject *branchBadge = dashboard->findChild<QObject *>(
+        QStringLiteral("projectBranchBadge"));
+    QObject *recordingBorder = dashboard->findChild<QObject *>(
+        QStringLiteral("recordingKeyboardBorder"));
+    QObject *detail = dashboard->findChild<QObject *>(
+        QStringLiteral("recordingDetailPage"));
+    QObject *detailBorder = dashboard->findChild<QObject *>(
+        QStringLiteral("detailKeyboardBorder"));
+    QVERIFY(pathBadge != nullptr);
+    QVERIFY(branchBadge != nullptr);
+    QVERIFY(recordingBorder != nullptr);
+    QVERIFY(detail != nullptr);
+    QVERIFY(detailBorder != nullptr);
+    QVERIFY(recordingBorder->property("visible").toBool());
+    QVERIFY(!detailBorder->property("visible").toBool());
+
+    QVERIFY(QMetaObject::invokeMethod(pathBadge, "clicked"));
+    QCOMPARE(bridge.copiedText, QStringLiteral("/home/jihmy/Projects/dicta"));
+    QVERIFY(QMetaObject::invokeMethod(branchBadge, "clicked"));
+    QCOMPARE(bridge.copiedText, QStringLiteral("main"));
+
+    QTest::keyClick(window, Qt::Key_Down);
+    QTRY_COMPARE(bridge.selectedRecordingId, QStringLiteral("second"));
+    QTest::keyClick(window, Qt::Key_C);
+    QCOMPARE(bridge.copyCalls, 1);
+
+    QTest::keyClick(window, Qt::Key_Right);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
+    QCOMPARE(detail->property("keyboardTarget").toInt(), 0);
+    QVERIFY(detailBorder->property("visible").toBool());
+    QVERIFY(!recordingBorder->property("visible").toBool());
+    QTest::keyClick(window, Qt::Key_Space);
+    QCOMPARE(bridge.openCalls, 1);
+
+    QTest::keyClick(window, Qt::Key_Right);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
+    QCOMPARE(detail->property("keyboardTarget").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Return);
+    QCOMPARE(bridge.copyCalls, 2);
+
+    QTest::keyClick(window, Qt::Key_Down);
+    QCOMPARE(detail->property("keyboardTarget").toInt(), 3);
+    QTest::keyClick(window, Qt::Key_Right);
+    QCOMPARE(detail->property("currentTab").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Up);
+    QCOMPARE(detail->property("keyboardTarget").toInt(), 0);
+    QTest::keyClick(window, Qt::Key_Left);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Right);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
+
+    QTest::keyClick(window, Qt::Key_Delete);
+    QCOMPARE(bridge.deleteCalls, 0);
+    QTest::keyClick(window, Qt::Key_Return);
+    QCOMPARE(bridge.deleteCalls, 1);
+}
+
+void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.projects = QVariantList {
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("dicta")},
+                     {QStringLiteral("name"), QStringLiteral("dicta")},
+                     {QStringLiteral("selected"), true}},
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("peepel")},
+                     {QStringLiteral("name"), QStringLiteral("peepel")}},
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("__unprojected__")},
+                     {QStringLiteral("name"), QStringLiteral("General")}},
+    };
+    bridge.currentProject = bridge.projects.first().toMap();
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    QTRY_VERIFY(window->isVisible());
+    window->requestActivate();
+    QTRY_VERIFY(window->isActive());
+    QObject *rail = dashboard->findChild<QObject *>(QStringLiteral("projectRail"));
+    QVERIFY(rail != nullptr);
+
+    QTest::keyClick(window, Qt::Key_Left);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 0);
+    QCOMPARE(rail->property("keyboardIndex").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Up);
+    QCOMPARE(rail->property("keyboardIndex").toInt(), 0);
+    QTest::keyClick(window, Qt::Key_Return);
+    QCOMPARE(bridge.currentProject.value(QStringLiteral("id")).toString(),
+             QStringLiteral("__unprojected__"));
+}
+
+void DashboardQmlTest::settingsCloseWithEscapeAndLeftArrow()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    QTRY_VERIFY(window->isVisible());
+
+    dashboard->setProperty("settingsOpen", true);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_VERIFY(!dashboard->property("settingsOpen").toBool());
+
+    dashboard->setProperty("settingsOpen", true);
+    QTest::keyClick(window, Qt::Key_Left);
+    QTRY_VERIFY(!dashboard->property("settingsOpen").toBool());
 }
 
 void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
@@ -738,8 +910,9 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
     QObject *generalApply = nullptr;
     QObject *cleanupNow = nullptr;
     QObject *installModel = nullptr;
-    QObject *connectCodex = nullptr;
-    QObject *restartCodex = nullptr;
+    QObject *mcpAction = nullptr;
+    QObject *appearanceCard = nullptr;
+    QObject *connectionsCard = nullptr;
     QTRY_VERIFY((branch = dashboard->findChild<QObject *>(
         QStringLiteral("branchLockingToggle"))) != nullptr);
     QTRY_VERIFY((cleanup = dashboard->findChild<QObject *>(
@@ -752,10 +925,17 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
         QStringLiteral("cleanupNow"))) != nullptr);
     QTRY_VERIFY((installModel = dashboard->findChild<QObject *>(
         QStringLiteral("installQualityModel"))) != nullptr);
-    QTRY_VERIFY((connectCodex = dashboard->findChild<QObject *>(
-        QStringLiteral("connectCodexMcp"))) != nullptr);
-    QTRY_VERIFY((restartCodex = dashboard->findChild<QObject *>(
-        QStringLiteral("restartCodexMcp"))) != nullptr);
+    QTRY_VERIFY((mcpAction = dashboard->findChild<QObject *>(
+        QStringLiteral("mcpActionButton"))) != nullptr);
+    QTRY_VERIFY((appearanceCard = dashboard->findChild<QObject *>(
+        QStringLiteral("settingsAppearanceCard"))) != nullptr);
+    QTRY_VERIFY((connectionsCard = dashboard->findChild<QObject *>(
+        QStringLiteral("settingsConnectionsCard"))) != nullptr);
+    QVERIFY(appearanceCard->property("visible").toBool());
+    QVERIFY(!connectionsCard->property("visible").toBool());
+    dashboard->setProperty("settingsSection", QStringLiteral("connections"));
+    QTRY_VERIFY(!appearanceCard->property("visible").toBool());
+    QTRY_VERIFY(connectionsCard->property("visible").toBool());
 
     QVERIFY(QMetaObject::invokeMethod(
         dashboard.get(),
@@ -773,8 +953,10 @@ void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()
     QVERIFY(QMetaObject::invokeMethod(generalApply, "clicked"));
     QVERIFY(QMetaObject::invokeMethod(cleanupNow, "clicked"));
     QVERIFY(QMetaObject::invokeMethod(installModel, "clicked"));
-    QVERIFY(QMetaObject::invokeMethod(connectCodex, "clicked"));
-    QVERIFY(QMetaObject::invokeMethod(restartCodex, "clicked"));
+    QVERIFY(QMetaObject::invokeMethod(mcpAction, "clicked"));
+    QTRY_COMPARE(bridge.codexMcp.value(QStringLiteral("state")).toString(),
+                 QStringLiteral("connected"));
+    QVERIFY(QMetaObject::invokeMethod(mcpAction, "clicked"));
 
     QCOMPARE(bridge.settingCalls, 5);
     QCOMPARE(bridge.cleanupCalls, 1);
@@ -812,6 +994,7 @@ void DashboardQmlTest::visualQaCapture()
         QVariantMap {{QStringLiteral("id"), QStringLiteral("dicta")},
                      {QStringLiteral("name"), QStringLiteral("dicta")},
                      {QStringLiteral("path"), QStringLiteral("/home/jihmy/Projects/dicta")},
+                     {QStringLiteral("branch"), QStringLiteral("main")},
                      {QStringLiteral("selected"), true}},
         QVariantMap {{QStringLiteral("id"), QStringLiteral("placeholder")},
                      {QStringLiteral("name"), QStringLiteral("placeholder")},
@@ -819,13 +1002,15 @@ void DashboardQmlTest::visualQaCapture()
                      {QStringLiteral("selected"), false}},
         QVariantMap {{QStringLiteral("id"), QStringLiteral("peepel")},
                      {QStringLiteral("name"), QStringLiteral("peepel")},
-                     {QStringLiteral("path"), QStringLiteral("securex-historical-import")},
+                     {QStringLiteral("path"), QStringLiteral("/home/jihmy/Projects/peepel")},
+                     {QStringLiteral("branch"), QStringLiteral("securex-historical-import")},
                      {QStringLiteral("selected"), false}},
     };
     bridge.currentProject = QVariantMap {
         {QStringLiteral("id"), QStringLiteral("dicta")},
         {QStringLiteral("name"), QStringLiteral("dicta")},
         {QStringLiteral("path"), QStringLiteral("~/Projects/dicta")},
+        {QStringLiteral("branch"), QStringLiteral("main")},
         {QStringLiteral("selected"), true},
     };
     const auto summary = [](const QString &id, const QString &time, const QString &note,
@@ -911,18 +1096,25 @@ void DashboardQmlTest::visualQaCapture()
     QQmlComponent component = dashboardComponent(engine);
     QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
     QVERIFY2(dashboard, qPrintable(component.errorString()));
-    dashboard->setProperty("width", 1487);
-    dashboard->setProperty("height", 1058);
+    dashboard->setProperty("width", 1510);
+    dashboard->setProperty("height", 870);
     auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
     QVERIFY(window != nullptr);
     window->show();
     QTRY_VERIFY(window->isVisible());
+    if (qEnvironmentVariableIntValue("DICTA_DESIGN_QA_SETTINGS") != 0) {
+        dashboard->setProperty("settingsOpen", true);
+        const QString section = qEnvironmentVariable("DICTA_DESIGN_QA_SECTION");
+        if (!section.isEmpty()) {
+            dashboard->setProperty("settingsSection", section);
+        }
+    }
     QTest::qWait(350);
 
     const QFileInfo outputInfo(outputPath);
     QVERIFY(QDir().mkpath(outputInfo.absolutePath()));
     const QImage image = window->grabWindow();
-    QCOMPARE(image.size(), QSize(1487, 1058));
+    QCOMPARE(image.size(), QSize(1510, 870));
     QVERIFY2(image.save(outputPath), qPrintable(outputPath));
 }
 

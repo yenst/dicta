@@ -230,7 +230,7 @@ fn build_transcription_state(
     if !factory.is_available() {
         return Ok(TranscriptionState::Disabled(
             DisabledTranscriptionPort::new(
-                "local transcription is unavailable because ffmpeg or voxtype is missing",
+                "local transcription is unavailable because ffmpeg is missing",
             ),
         ));
     }
@@ -581,6 +581,7 @@ mod tests {
                 ffmpeg_program: PathBuf::from("ffmpeg"),
                 voxtype_program: PathBuf::from("voxtype"),
                 temporary_root: root.join("temporary"),
+                timestamped_whisper: false,
             },
             installer: dicta_transcribe::ModelInstallerConfig::default(),
         }

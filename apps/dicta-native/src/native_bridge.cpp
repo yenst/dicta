@@ -91,6 +91,12 @@ int dicta_native_voice_note_stop();
 int dicta_native_voice_note_cancel();
 std::size_t dicta_native_voice_note_status(unsigned char *output, std::size_t capacity);
 std::size_t dicta_native_host_ui_snapshot(unsigned char *output, std::size_t capacity);
+std::size_t dicta_native_host_recordings_for_project(
+    const unsigned char *projectId,
+    std::size_t projectIdLength,
+    unsigned char *output,
+    std::size_t capacity
+);
 std::size_t dicta_native_host_recording_detail(
     const unsigned char *recordingId,
     std::size_t recordingIdLength,
@@ -312,6 +318,20 @@ bool NativeBridge::multimediaAvailable() const
 
 bool NativeBridge::startRecording(const QString &note)
 {
+    if (m_runtimePhase == QStringLiteral("idle")
+        && !m_browsedProjectId.isEmpty()
+        && m_browsedProjectId != m_recordingProjectId) {
+        const QByteArray project = m_browsedProjectId.toUtf8();
+        if (dicta_native_host_project_select(
+                reinterpret_cast<const unsigned char *>(project.constData()),
+                std::size_t(project.size())
+            ) != 0) {
+            m_uiError = lastHostError();
+            emit dashboardChanged();
+            return false;
+        }
+        m_recordingProjectId = m_browsedProjectId;
+    }
     const QByteArray utf8 = note.trimmed().toUtf8();
     const auto *data = reinterpret_cast<const unsigned char *>(utf8.constData());
     if (dicta_native_host_record_start(data, std::size_t(utf8.size())) != 0) {
@@ -437,6 +457,7 @@ bool NativeBridge::refreshDashboard()
             recordings.append(recording.toObject().toVariantMap());
         }
     }
+    const QString runtimeProjectId = status.value(QStringLiteral("project")).toString();
     QVariantList projects;
     QVariantMap currentProject;
     const QJsonArray projectArray = root.value(QStringLiteral("projects")).toArray();
@@ -445,15 +466,35 @@ bool NativeBridge::refreshDashboard()
         if (!project.isObject()) {
             continue;
         }
-        const QVariantMap value = project.toObject().toVariantMap();
+        QVariantMap value = project.toObject().toVariantMap();
+        const QString projectId = value.value(QStringLiteral("id")).toString();
+        if (m_browsedProjectId.isEmpty()) {
+            m_browsedProjectId = runtimeProjectId;
+        }
+        const bool browsed = projectId == m_browsedProjectId;
+        value.insert(QStringLiteral("selected"), browsed);
         projects.append(value);
-        if (value.value(QStringLiteral("selected")).toBool()) {
+        if (browsed) {
             currentProject = value;
+        }
+    }
+    if (currentProject.isEmpty() && !projects.isEmpty()) {
+        m_browsedProjectId = runtimeProjectId;
+        for (QVariant &project : projects) {
+            QVariantMap value = project.toMap();
+            const bool browsed = value.value(QStringLiteral("id")).toString()
+                == m_browsedProjectId;
+            value.insert(QStringLiteral("selected"), browsed);
+            project = value;
+            if (browsed) {
+                currentProject = value;
+            }
         }
     }
 
     m_runtimePhase = phase;
     m_activeRecordingId = status.value(QStringLiteral("recording_id")).toString();
+    m_recordingProjectId = runtimeProjectId;
     m_annotationsEnabled = status.value(QStringLiteral("annotations_enabled")).toBool();
     m_annotationTool = status.value(QStringLiteral("annotation_tool")).toString();
     m_projects = projects;
@@ -468,8 +509,45 @@ bool NativeBridge::refreshDashboard()
         }
     }
     m_recentRecordings = recordings;
+    if (!m_browsedProjectId.isEmpty() && m_browsedProjectId != m_recordingProjectId
+        && !loadRecordingsForProject(m_browsedProjectId)) {
+        return false;
+    }
     m_uiError.clear();
     emit dashboardChanged();
+    return true;
+}
+
+bool NativeBridge::loadRecordingsForProject(const QString &projectId)
+{
+    const QByteArray project = projectId.toUtf8();
+    QByteArray bytes(UiSnapshotCapacity, '\0');
+    const std::size_t length = dicta_native_host_recordings_for_project(
+        reinterpret_cast<const unsigned char *>(project.constData()),
+        std::size_t(project.size()),
+        reinterpret_cast<unsigned char *>(bytes.data()),
+        std::size_t(bytes.size())
+    );
+    if (length == 0 || length > std::size_t(bytes.size())) {
+        m_uiError = lastHostError();
+        return false;
+    }
+    bytes.truncate(qsizetype(length));
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        m_uiError = tr("The project recording list returned invalid JSON.");
+        return false;
+    }
+    QVariantList recordings;
+    const QJsonArray array = document.array();
+    recordings.reserve(array.size());
+    for (const QJsonValue &recording : array) {
+        if (recording.isObject()) {
+            recordings.append(recording.toObject().toVariantMap());
+        }
+    }
+    m_recentRecordings = recordings;
     return true;
 }
 
@@ -619,6 +697,27 @@ bool NativeBridge::selectProject(const QString &projectId)
     if (id.isEmpty()) {
         return false;
     }
+    const QString idValue = projectId.trimmed();
+    m_browsedProjectId = idValue;
+    closeRecording();
+    if (m_runtimePhase != QStringLiteral("idle")) {
+        for (QVariant &project : m_projects) {
+            QVariantMap value = project.toMap();
+            const bool selected = value.value(QStringLiteral("id")).toString() == idValue;
+            value.insert(QStringLiteral("selected"), selected);
+            project = value;
+            if (selected) {
+                m_currentProject = value;
+            }
+        }
+        if (!loadRecordingsForProject(idValue)) {
+            emit dashboardChanged();
+            return false;
+        }
+        m_uiError.clear();
+        emit dashboardChanged();
+        return true;
+    }
     if (dicta_native_host_project_select(
             reinterpret_cast<const unsigned char *>(id.constData()),
             std::size_t(id.size())
@@ -630,7 +729,6 @@ bool NativeBridge::selectProject(const QString &projectId)
         }
         return false;
     }
-    closeRecording();
     return refreshDashboard();
 }
 
@@ -651,6 +749,7 @@ bool NativeBridge::createProject(const QString &name)
         }
         return false;
     }
+    m_browsedProjectId.clear();
     closeRecording();
     return refreshDashboard();
 }
@@ -946,6 +1045,15 @@ bool NativeBridge::copySelectedContext()
     QGuiApplication::clipboard()->setText(QString::fromUtf8(bytes));
     m_uiError.clear();
     emit dashboardChanged();
+    return true;
+}
+
+bool NativeBridge::copyText(const QString &text)
+{
+    if (text.isEmpty()) {
+        return false;
+    }
+    QGuiApplication::clipboard()->setText(text);
     return true;
 }
 

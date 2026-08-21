@@ -10,6 +10,7 @@ static API_VERSION: &[u8] = b"dicta-native/0.12\0";
 
 pub const HOST_FLAG_E2E: u32 = 1;
 pub const UI_SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
+pub const RECORDING_LIST_MAX_BYTES: usize = 64 * 1024;
 pub const RECORDING_DETAIL_MAX_BYTES: usize = 1024 * 1024;
 pub const RECORDING_CONTEXT_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const TIMELINE_NOTES_MAX_BYTES: usize = 1024 * 1024;
@@ -434,6 +435,43 @@ pub unsafe extern "C" fn dicta_native_host_ui_snapshot(output: *mut u8, capacity
     };
     // SAFETY: This function forwards the caller's writable-buffer contract.
     unsafe { write_json_payload(&snapshot, output, capacity, UI_SNAPSHOT_MAX_BYTES) }
+}
+
+/// Writes the recent recordings for one project as bounded JSON.
+///
+/// # Safety
+///
+/// The project ID must be readable UTF-8 for `project_id_len` bytes. `output`
+/// must point to `capacity` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn dicta_native_host_recordings_for_project(
+    project_id: *const u8,
+    project_id_len: usize,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    if project_id_len == 0 || project_id_len > 256 {
+        host::set_detached_error("project ID length is invalid".to_owned());
+        return 0;
+    }
+    // SAFETY: The caller contract establishes the readable ID range.
+    let project_id = match unsafe { utf8_field(project_id, project_id_len, "project ID") } {
+        Ok(project_id) => project_id,
+        Err(message) => {
+            host::set_detached_error(message);
+            return 0;
+        }
+    };
+    let recordings = match host::recordings_for_project(project_id) {
+        Ok(recordings) => recordings,
+        Err(message) => {
+            host::set_detached_error(message);
+            return 0;
+        }
+    };
+    host::set_detached_error(String::new());
+    // SAFETY: This function forwards the caller's writable-buffer contract.
+    unsafe { write_json_payload(&recordings, output, capacity, RECORDING_LIST_MAX_BYTES) }
 }
 
 /// Writes one recording detail payload as bounded, versioned JSON.

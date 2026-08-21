@@ -197,9 +197,34 @@ mv -f -- "$temporary" "$bindings"
 temporary="$(mktemp "$hypr_dir/.dicta-shortcut.XXXXXX")"
 printf '%s\n' \
   '-- Managed by Dicta. Re-run dicta-install-omarchy-shortcut to repair or remove it.' \
-  '-- The selected key is released from its previous action before Dicta claims it.' \
+  '-- The selected recording key and annotation key are released before Dicta claims them.' \
   "hl.unbind(\"$sequence\")" \
   "o.bind(\"$sequence\", \"Toggle Dicta recording\", \"dicta record toggle\")" \
+  'hl.unbind("SUPER + ALT + A")' \
+  'hl.unbind("F8")' \
+  'o.bind("F8", "Draw Dicta annotation (hold)", "dicta annotate enable")' \
+  'o.bind("F8", nil, "dicta annotate disable", { release = true })' \
+  'o.window({ class = "^dicta-native$", title = "^Dicta Annotation Overlay$" }, {' \
+  '  tag = "-default-opacity",' \
+  '  float = true,' \
+  '  pin = true,' \
+  '  border_size = 0,' \
+  '  rounding = 0,' \
+  '  opacity = "1 1",' \
+  '  size = { "monitor_w", "monitor_h" },' \
+  '  move = { 0, 0 },' \
+  '})' \
+  'o.window({ class = "^dicta-native$", title = "^Dicta Annotation Helper$" }, {' \
+  '  tag = "-default-opacity",' \
+  '  float = true,' \
+  '  pin = true,' \
+  '  no_initial_focus = true,' \
+  '  border_size = 0,' \
+  '  rounding = 0,' \
+  '  opacity = "1 1",' \
+  '  size = { 326, 42 },' \
+  '  move = { "(monitor_w-window_w)/2", 42 },' \
+  '})' \
   >"$temporary"
 chmod 0644 "$temporary"
 mv -f -- "$temporary" "$managed"
@@ -212,6 +237,7 @@ if ! validate_reload; then
 fi
 
 echo "Installed Dicta's Omarchy shortcut: $sequence → dicta record toggle"
+echo "Installed Dicta's annotation shortcut: hold F8 to draw"
 echo "Bindings backup: $persistent_backup"
 if [[ -n "$previous_binding" && "$previous_binding" != "Toggle Dicta recording" ]]; then
   echo "Note: $sequence was previously bound to: $previous_binding"

@@ -472,6 +472,24 @@ fn summary(item: &LoadedRecording) -> RecordingSummary {
     }
 }
 
+const CONTEXT_TRANSCRIPT_LIMIT: usize = 1_200;
+
+fn transcript_excerpt(transcript: &str) -> String {
+    let transcript = transcript.split_whitespace().collect::<Vec<_>>().join(" ");
+    if transcript.chars().count() <= CONTEXT_TRANSCRIPT_LIMIT {
+        return transcript;
+    }
+    let mut excerpt = transcript
+        .chars()
+        .take(CONTEXT_TRANSCRIPT_LIMIT)
+        .collect::<String>();
+    if let Some(boundary) = excerpt.rfind(char::is_whitespace) {
+        excerpt.truncate(boundary);
+    }
+    excerpt.push_str("…\n\n_(Transcript truncated; open the recording for the full text.)_");
+    excerpt
+}
+
 fn render_context(item: &LoadedRecording) -> String {
     let recording = &item.recording;
     let mut output = format!(
@@ -485,16 +503,23 @@ fn render_context(item: &LoadedRecording) -> String {
         output.push_str(&format!("\n## Note\n\n{}\n", recording.note.trim()));
     }
     if let Some(transcript) = recording.transcript.as_deref() {
-        output.push_str(&format!("\n## Transcript\n\n{}\n", transcript.trim()));
+        output.push_str(&format!(
+            "\n## Transcript excerpt\n\n{}\n",
+            transcript_excerpt(transcript)
+        ));
     } else if !recording.transcript_segments.is_empty() {
-        output.push_str("\n## Transcript\n\n");
+        let mut transcript = String::new();
         for segment in &recording.transcript_segments {
-            output.push_str(&format!(
-                "- [{}] {}\n",
+            transcript.push_str(&format!(
+                "[{}] {} ",
                 dicta_core::transcript::format_timestamp(segment.start_seconds),
                 segment.text.trim()
             ));
         }
+        output.push_str(&format!(
+            "\n## Transcript excerpt\n\n{}\n",
+            transcript_excerpt(&transcript)
+        ));
     } else {
         output.push_str("\nTranscript unavailable.\n");
     }

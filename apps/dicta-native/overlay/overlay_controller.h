@@ -88,5 +88,6 @@ private:
     QString m_outputName;
     QString m_lastError;
     Tool m_tool = Pen;
+    bool m_sessionActive = false;
     bool m_ready = false;
 };

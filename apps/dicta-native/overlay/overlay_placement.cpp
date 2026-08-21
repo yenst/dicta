@@ -36,7 +36,7 @@ public:
         );
         window.setScreen(&screen);
         window.setGeometry(screen.geometry());
-        window.showFullScreen();
+        window.show();
         return true;
     }
 };

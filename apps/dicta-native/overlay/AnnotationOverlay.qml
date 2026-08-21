@@ -6,6 +6,7 @@ Window {
     id: overlay
 
     objectName: "dictaAnnotationOverlay"
+    title: "Dicta Annotation Overlay"
     color: "transparent"
     visible: false
     flags: Qt.FramelessWindowHint
@@ -21,10 +22,20 @@ Window {
     signal strokeCommitted(var normalizedPoints, int tool, double startedAtSeconds, double endedAtSeconds)
     signal passThroughRequested()
 
+    function showHelper() {
+        helper.show();
+        helperHideTimer.restart();
+    }
+
+    function hideHelper() {
+        helperHideTimer.stop();
+        helper.hide();
+    }
+
     function showOverlay() {
         surface.clear();
         passThroughRequested();
-        showFullScreen();
+        show();
     }
 
     function enterPassThroughMode() {
@@ -47,6 +58,22 @@ Window {
         passThroughRequested();
         surface.clear();
         hide();
+    }
+
+    onAnnotationModeChanged: {
+        if (annotationMode) {
+            helperHideTimer.stop();
+            helper.show();
+        } else {
+            helper.hide();
+        }
+    }
+
+    Timer {
+        id: helperHideTimer
+        interval: 3200
+        repeat: false
+        onTriggered: helper.hide()
     }
 
     AnnotationItem {
@@ -72,5 +99,46 @@ Window {
         sequences: ["Escape"]
         enabled: overlay.visible && overlay.annotationMode
         onActivated: overlay.passThroughRequested()
+    }
+
+    Window {
+        id: helper
+
+        objectName: "dictaAnnotationHelper"
+        title: "Dicta Annotation Helper"
+        transientParent: null
+        width: 326
+        height: 42
+        color: "transparent"
+        visible: false
+        screen: overlay.screen
+        x: screen ? screen.virtualX + Math.round((screen.width - width) / 2) : 0
+        y: screen ? screen.virtualY + 42 : 42
+        flags: Qt.FramelessWindowHint
+            | Qt.Tool
+            | Qt.BypassWindowManagerHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowTransparentForInput
+            | Qt.WindowDoesNotAcceptFocus
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 11
+            color: overlay.annotationMode ? "#dd22212c" : "#d91a1924"
+            border.width: 1
+            border.color: overlay.annotationMode ? "#ff7597" : "#596078"
+
+            Text {
+                objectName: "dictaAnnotationHelperText"
+                anchors.centerIn: parent
+                color: overlay.annotationMode ? "#ff91aa" : "#e8e9f2"
+                font.family: "monospace"
+                font.pixelSize: 13
+                font.weight: Font.Medium
+                text: overlay.annotationMode
+                    ? "Drawing · release F8 to interact"
+                    : "Hold F8 to draw while recording"
+            }
+        }
     }
 }

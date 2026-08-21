@@ -6,3 +6,5 @@ edition = "2021"
 
 [dependencies]
 dicta-core = { path = "../dicta-core" }
+hound = "3.5"
+whisper-rs = { version = "0.16", features = ["vulkan"] }

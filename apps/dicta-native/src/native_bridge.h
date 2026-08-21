@@ -80,6 +80,7 @@ public:
     Q_INVOKABLE [[nodiscard]] bool stopVoiceNote();
     Q_INVOKABLE [[nodiscard]] bool cancelVoiceNote();
     Q_INVOKABLE [[nodiscard]] bool copySelectedContext();
+    Q_INVOKABLE [[nodiscard]] bool copyText(const QString &text);
     Q_INVOKABLE [[nodiscard]] bool revealSelectedRecording();
     Q_INVOKABLE [[nodiscard]] bool openSelectedRecording();
     Q_INVOKABLE [[nodiscard]] bool setShortcut(const QString &shortcutId);
@@ -127,6 +128,7 @@ private:
     [[nodiscard]] bool applyCodexMcpAction(quint32 action);
     [[nodiscard]] bool readCodexMcpStatus(quint32 action = 0);
     [[nodiscard]] bool refreshVoiceNoteStatus();
+    [[nodiscard]] bool loadRecordingsForProject(const QString &projectId);
 
     OverlayController &m_overlay;
     QTimer m_statusTimer;
@@ -136,6 +138,8 @@ private:
     qulonglong m_strokeCount = 0;
     QString m_runtimePhase = QStringLiteral("unavailable");
     QString m_activeRecordingId;
+    QString m_recordingProjectId;
+    QString m_browsedProjectId;
     QString m_annotationTool;
     QVariantList m_projects;
     QVariantMap m_currentProject;

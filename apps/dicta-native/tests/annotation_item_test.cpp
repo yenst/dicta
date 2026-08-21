@@ -30,6 +30,7 @@ private slots:
     void overlayWindowFlagsFollowInputModeSynchronously();
     void visibleOverlayIsRemappedForEachInputMode();
     void focusedOverlayRoutesEscapeToPassThroughRequest();
+    void helperCanRemainVisibleWhileDrawingSurfaceIsUnmapped();
 };
 
 namespace {
@@ -203,18 +204,21 @@ void AnnotationItemTest::visibleOverlayIsRemappedForEachInputMode()
         | Qt::WindowTransparentForInput
         | Qt::WindowDoesNotAcceptFocus
     );
-    window.showFullScreen();
+    window.setGeometry(10, 20, 320, 180);
+    window.show();
     QTRY_VERIFY(window.isVisible());
 
     OverlayController::applyWindowInputMode(window, true);
     QVERIFY(window.isVisible());
-    QVERIFY(window.visibility() == QWindow::FullScreen);
+    QVERIFY(window.visibility() == QWindow::Windowed);
+    QCOMPARE(window.geometry(), QRect(10, 20, 320, 180));
     QVERIFY(!window.flags().testFlag(Qt::WindowTransparentForInput));
     QVERIFY(!window.flags().testFlag(Qt::WindowDoesNotAcceptFocus));
 
     OverlayController::applyWindowInputMode(window, false);
     QVERIFY(window.isVisible());
-    QVERIFY(window.visibility() == QWindow::FullScreen);
+    QVERIFY(window.visibility() == QWindow::Windowed);
+    QCOMPARE(window.geometry(), QRect(10, 20, 320, 180));
     QVERIFY(window.flags().testFlag(Qt::WindowTransparentForInput));
     QVERIFY(window.flags().testFlag(Qt::WindowDoesNotAcceptFocus));
 }
@@ -254,6 +258,36 @@ void AnnotationItemTest::focusedOverlayRoutesEscapeToPassThroughRequest()
     QTest::keyClick(window, Qt::Key_Escape);
 
     QCOMPARE(passThroughRequested.count(), 1);
+}
+
+void AnnotationItemTest::helperCanRemainVisibleWhileDrawingSurfaceIsUnmapped()
+{
+    qmlRegisterType<AnnotationItem>("Dicta.Native", 1, 0, "AnnotationItem");
+    QQmlEngine engine;
+    QQmlComponent component(
+        &engine,
+        QUrl::fromLocalFile(QStringLiteral(DICTA_OVERLAY_QML_PATH))
+    );
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QScopedPointer<QObject> created(component.create());
+    QVERIFY2(created, qPrintable(component.errorString()));
+    auto *overlay = qobject_cast<QQuickWindow *>(created.get());
+    QVERIFY(overlay != nullptr);
+    auto *helper = overlay->findChild<QQuickWindow *>(
+        QStringLiteral("dictaAnnotationHelper")
+    );
+    QVERIFY(helper != nullptr);
+    QVERIFY(!overlay->isVisible());
+    QVERIFY(!helper->isVisible());
+    QVERIFY(helper->flags().testFlag(Qt::WindowTransparentForInput));
+    QVERIFY(helper->flags().testFlag(Qt::WindowDoesNotAcceptFocus));
+
+    QVERIFY(QMetaObject::invokeMethod(overlay, "showHelper"));
+    QTRY_VERIFY(helper->isVisible());
+    QVERIFY(!overlay->isVisible());
+
+    QVERIFY(QMetaObject::invokeMethod(overlay, "hideHelper"));
+    QTRY_VERIFY(!helper->isVisible());
 }
 
 QTEST_MAIN(AnnotationItemTest)

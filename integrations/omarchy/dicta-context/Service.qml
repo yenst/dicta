@@ -20,10 +20,13 @@ Item {
   property string stateError: ""
   property string copyError: ""
   property string projectError: ""
+  property string recordError: ""
+  property string statusOutput: ""
   property string pendingProjectId: ""
   property string pendingContextId: ""
   property string copiedContextId: ""
   property bool dictaRunning: false
+  property bool recordingActive: false
 
   readonly property string dictaCommand: String(setting("dictaCommand", "dicta") || "dicta")
   readonly property int refreshInterval: Math.max(5, Number(setting("refreshIntervalSec", 30))) * 1000
@@ -35,8 +38,33 @@ Item {
 
   function checkDictaRunning() {
     if (dictaStatusProcess.running) return
-    dictaStatusProcess.command = ["pgrep", "-x", "dicta-native"]
+    statusOutput = ""
+    dictaStatusProcess.command = [dictaCommand, "--no-start", "--json", "status"]
     dictaStatusProcess.running = true
+  }
+
+  function finishDictaStatus(exitCode) {
+    var wasRunning = dictaRunning
+    var wasRecording = recordingActive
+    dictaRunning = Number(exitCode) === 0
+    recordingActive = false
+    if (dictaRunning) {
+      try {
+        var payload = JSON.parse(statusOutput || "{}")
+        var data = payload && payload.data ? payload.data : ({})
+        var phase = String(data.phase || "")
+        recordingActive = phase === "recording" || phase === "annotating"
+      } catch (parseError) {
+        dictaRunning = false
+      }
+    }
+    if (dictaRunning && (!wasRunning || wasRecording !== recordingActive))
+      Qt.callLater(function() { root.refresh(root.selectedProjectId) })
+    if (!dictaRunning) {
+      loading = false
+      projects = []
+      contexts = []
+    }
   }
 
   function refresh(projectId) {
@@ -98,7 +126,7 @@ Item {
           contexts = []
           for (var j = 0; j < data.length; j++) {
             var recording = data[j] || {}
-          contexts.push({
+            contexts.push({
               id: String(recording.id || ""),
               projectId: String(recording.project || selectedProjectId),
               branch: String(recording.branch || ""),
@@ -161,9 +189,22 @@ Item {
   }
 
   function toggleRecording() {
+    if (recordProcess.running) return
+    recordError = ""
     actionStatus = "RECORDING REQUESTED"
+    recordProcess.command = [dictaCommand, "record", "toggle"]
+    recordProcess.running = true
+  }
+
+  function finishRecord(exitCode) {
+    if (Number(exitCode) !== 0) {
+      actionStatus = ""
+      error = recordError.trim() || "Could not toggle Dicta recording."
+      return
+    }
+    actionStatus = "RECORDING UPDATED"
     actionClear.restart()
-    Quickshell.execDetached([dictaCommand, "record", "toggle"])
+    refresh(selectedProjectId)
   }
 
   function copyContext(projectId, recordingId) {
@@ -246,18 +287,24 @@ Item {
   }
 
   Process {
+    id: recordProcess
+    running: false
+    onExited: function(exitCode) { Qt.callLater(function() { root.finishRecord(exitCode) }) }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.recordError = text
+    }
+  }
+
+  Process {
     id: dictaStatusProcess
     running: false
     onExited: function(exitCode) {
-      var wasRunning = root.dictaRunning
-      root.dictaRunning = Number(exitCode) === 0
-      if (root.dictaRunning && !wasRunning)
-        Qt.callLater(function() { root.refresh(root.selectedProjectId) })
-      if (!root.dictaRunning) {
-        root.loading = false
-        root.projects = []
-        root.contexts = []
-      }
+      Qt.callLater(function() { root.finishDictaStatus(exitCode) })
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.statusOutput = text
     }
   }
 

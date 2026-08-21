@@ -86,9 +86,34 @@ fn managed_binding(shortcut_id: &str) -> Result<String, PortError> {
     };
     Ok(format!(
         "-- Managed by Dicta. Re-run dicta-install-omarchy-shortcut to repair or remove it.\n\
-         -- The selected key is released from its previous action before Dicta claims it.\n\
+         -- The selected recording key and annotation key are released before Dicta claims them.\n\
          hl.unbind(\"{sequence}\")\n\
-         o.bind(\"{sequence}\", \"Toggle Dicta recording\", \"dicta record toggle\")\n"
+         o.bind(\"{sequence}\", \"Toggle Dicta recording\", \"dicta record toggle\")\n\
+         hl.unbind(\"SUPER + ALT + A\")\n\
+         hl.unbind(\"F8\")\n\
+         o.bind(\"F8\", \"Draw Dicta annotation (hold)\", \"dicta annotate enable\")\n\
+         o.bind(\"F8\", nil, \"dicta annotate disable\", {{ release = true }})\n\
+         o.window({{ class = \"^dicta-native$\", title = \"^Dicta Annotation Overlay$\" }}, {{\n\
+           tag = \"-default-opacity\",\n\
+           float = true,\n\
+           pin = true,\n\
+           border_size = 0,\n\
+           rounding = 0,\n\
+           opacity = \"1 1\",\n\
+           size = {{ \"monitor_w\", \"monitor_h\" }},\n\
+           move = {{ 0, 0 }},\n\
+         }})\n\
+         o.window({{ class = \"^dicta-native$\", title = \"^Dicta Annotation Helper$\" }}, {{\n\
+           tag = \"-default-opacity\",\n\
+           float = true,\n\
+           pin = true,\n\
+           no_initial_focus = true,\n\
+           border_size = 0,\n\
+           rounding = 0,\n\
+           opacity = \"1 1\",\n\
+           size = {{ 326, 42 }},\n\
+           move = {{ \"(monitor_w-window_w)/2\", 42 }},\n\
+         }})\n"
     ))
 }
 
@@ -191,6 +216,14 @@ mod tests {
         let control_space = fs::read_to_string(&destination).unwrap();
         assert!(control_space.contains("hl.unbind(\"CTRL + SPACE\")"));
         assert!(control_space.contains("\"dicta record toggle\""));
+        assert!(control_space.contains("hl.unbind(\"SUPER + ALT + A\")"));
+        assert!(control_space.contains("hl.unbind(\"F8\")"));
+        assert!(control_space.contains("\"dicta annotate enable\""));
+        assert!(control_space.contains("\"dicta annotate disable\""));
+        assert!(control_space.contains("release = true"));
+        assert!(control_space.contains("Dicta Annotation Overlay"));
+        assert!(control_space.contains("Dicta Annotation Helper"));
+        assert!(control_space.contains("float = true"));
         assert!(!control_space.contains("--toggle-recording"));
 
         settings.shortcut_id = "command_shift_d".to_owned();

@@ -697,6 +697,19 @@ pub fn ui_snapshot() -> Result<UiSnapshot, String> {
     })
 }
 
+pub fn recordings_for_project(project_id: String) -> Result<Vec<RecordingSummary>, String> {
+    match control_request(Command::RecordingList {
+        project: Some(project_id),
+        branch: None,
+        limit: Some(64),
+    })? {
+        Response::Recordings(recordings) => Ok(recordings),
+        response => Err(format!(
+            "recording list returned unexpected response: {response:?}"
+        )),
+    }
+}
+
 fn control_request(command: Command) -> Result<Response, String> {
     let socket_path = {
         let host = lock(slot());

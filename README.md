@@ -39,7 +39,8 @@ JSON metadata, JPEG poster, optional annotation sidecar, and transcript.
 
 Dicta targets Omarchy/Hyprland first. Building requires Rust, CMake, a C++20
 compiler, and Qt 6.5+ development packages for Core, Gui, Qml, Quick, and
-optionally Multimedia.
+optionally Multimedia. The embedded GPU transcription backend also requires
+Vulkan development headers and `glslc` while building.
 
 The installed runtime uses:
 
@@ -47,7 +48,7 @@ The installed runtime uses:
 - `wf-recorder` as the wlroots fallback;
 - PipeWire/PulseAudio-compatible sources for desktop and microphone audio;
 - FFmpeg for audio normalization, poster frames, and MCP screenshots;
-- Voxtype plus the packaged compact Whisper model for local transcription;
+- embedded whisper.cpp/Vulkan plus the packaged compact Whisper model for local transcription;
 - `wl-copy` only when an explicit CLI copy action is requested.
 
 Missing transcription or playback tooling is reported without disabling the

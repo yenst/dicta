@@ -9,8 +9,8 @@ Item {
     required property QtObject bridge
     required property QtObject dictaTheme
     property string filterText: ""
-    property bool filterVisible: false
     property var recordings: bridge.recentRecordings || []
+    property bool keyboardFocused: false
 
     function filteredRecordings() {
         var query = filterText.trim().toLowerCase()
@@ -23,14 +23,30 @@ Item {
         })
     }
 
-    function toggleFilter() {
-        filterVisible = !filterVisible
-        if (filterVisible)
-            filterField.forceActiveFocus()
-        else {
-            filterText = ""
-            filterField.text = ""
+    function selectedIndex() {
+        var rows = filteredRecordings()
+        for (var i = 0; i < rows.length; ++i) {
+            if (String(rows[i].id || "") === String(bridge.selectedRecordingId || ""))
+                return i
         }
+        return rows.length ? 0 : -1
+    }
+
+    function moveKeyboardSelection(delta) {
+        var rows = filteredRecordings()
+        if (!rows.length)
+            return
+        var next = selectedIndex()
+        next = Math.max(0, Math.min(rows.length - 1, next + delta))
+        bridge.selectRecording(rows[next].id)
+        recordingList.positionViewAtIndex(next, ListView.Contain)
+    }
+
+    function activateKeyboardSelection() {
+        var rows = filteredRecordings()
+        var index = selectedIndex()
+        if (index >= 0 && index < rows.length)
+            bridge.selectRecording(rows[index].id)
     }
 
     function dateValue(value) {
@@ -96,37 +112,7 @@ Item {
                 font.pixelSize: root.dictaTheme.baseFontSize + 3
                 font.weight: Font.DemiBold
             }
-            FlatButton {
-                dictaTheme: root.dictaTheme
-                text: "Filter"
-                iconName: "filter"
-                quiet: true
-                selected: root.filterVisible
-                onClicked: root.toggleFilter()
-            }
-        }
 
-        TextField {
-            id: filterField
-            visible: root.filterVisible
-            Layout.fillWidth: true
-            Layout.leftMargin: 16 * root.dictaTheme.spacingScale
-            Layout.rightMargin: 16 * root.dictaTheme.spacingScale
-            Layout.bottomMargin: 8 * root.dictaTheme.spacingScale
-            placeholderText: "Filter notes and transcripts"
-            color: root.dictaTheme.foreground
-            placeholderTextColor: root.dictaTheme.darkForeground
-            selectionColor: root.dictaTheme.selection
-            font.family: root.dictaTheme.fontFamily
-            font.pixelSize: root.dictaTheme.baseFontSize
-            onTextChanged: root.filterText = text
-            background: Rectangle {
-                radius: 3 * root.dictaTheme.spacingScale
-                color: root.dictaTheme.background
-                border.width: 1
-                border.color: filterField.activeFocus
-                    ? root.dictaTheme.accent : root.dictaTheme.muted
-            }
         }
 
         Rectangle {
@@ -155,6 +141,7 @@ Item {
                     || root.dayKey(recordingList.model[index - 1].started_at)
                         !== root.dayKey(modelData.started_at)
                 property bool selected: root.bridge.selectedRecordingId === modelData.id
+                property bool keyboardSelected: root.keyboardFocused && selected
                 height: (firstOfDay ? 46 : 0) * root.dictaTheme.spacingScale
                     + 88 * root.dictaTheme.spacingScale
 
@@ -178,7 +165,8 @@ Item {
                     height: 88 * root.dictaTheme.spacingScale
                     color: recordingRow.selected
                         ? Qt.rgba(root.dictaTheme.accent.r, root.dictaTheme.accent.g,
-                            root.dictaTheme.accent.b, 0.11)
+                            root.dictaTheme.accent.b,
+                            recordingRow.keyboardSelected ? 0.17 : 0.11)
                         : rowMouse.containsMouse
                             ? Qt.rgba(root.dictaTheme.foreground.r, root.dictaTheme.foreground.g,
                                 root.dictaTheme.foreground.b, 0.04)
@@ -189,7 +177,7 @@ Item {
                         anchors.left: parent.left
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        width: 2
+                        width: recordingRow.keyboardSelected ? 3 : 2
                         color: root.dictaTheme.accent
                     }
                     Rectangle {
@@ -309,15 +297,15 @@ Item {
             }
         }
 
-        Text {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 42 * root.dictaTheme.spacingScale
-            Layout.leftMargin: 24 * root.dictaTheme.spacingScale
-            verticalAlignment: Text.AlignVCenter
-            text: recordingList.count + (recordingList.count === 1 ? " recording" : " recordings")
-            color: root.dictaTheme.darkForeground
-            font.family: root.dictaTheme.fontFamily
-            font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 2)
-        }
+    }
+
+    Rectangle {
+        objectName: "recordingKeyboardBorder"
+        anchors.fill: parent
+        z: 20
+        color: "transparent"
+        border.width: root.keyboardFocused ? 3 : 0
+        border.color: root.dictaTheme.accent
+        visible: root.keyboardFocused
     }
 }

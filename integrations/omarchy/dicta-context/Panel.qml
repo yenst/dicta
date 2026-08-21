@@ -111,21 +111,17 @@ Panel {
     settings: root.settings
   }
 
-  Connections {
-    target: service
-    function onDictaRunningChanged() {
-      if (!service.dictaRunning) root.close()
-    }
-  }
-
   Row {
     id: barControls
 
     BarIconButton {
       id: panelButton
-      visible: service.dictaRunning
+      visible: true
+      interactive: false
       bar: root.bar
-      tooltipText: "Dicta projects · click the dot to record"
+      tooltipText: service.dictaRunning
+        ? "Dicta projects · click the dot to record"
+        : "Open Dicta · click the dot to start recording"
       iconComponent: Component {
         Item {
           Image {
@@ -136,43 +132,52 @@ Panel {
             sourceSize.height: Math.round(height * Screen.devicePixelRatio)
           }
 
-          MouseArea {
-            id: recordHotspot
+          ThemeIcon {
+            id: recordHalo
+            visible: service.recordingActive
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            width: Style.space(13)
+            anchors.rightMargin: -Style.space(1)
+            anchors.bottomMargin: -Style.space(1)
+            width: Style.space(8)
             height: width
-            acceptedButtons: Qt.LeftButton
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: service.toggleRecording()
+            iconName: "media-record-symbolic"
+            iconColor: "#11131c"
+          }
 
-            ThemeIcon {
-              id: recordHalo
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              anchors.rightMargin: -Style.space(1)
-              anchors.bottomMargin: -Style.space(1)
-              width: Style.space(8)
-              height: width
-              iconName: "media-record-symbolic"
-              iconColor: "#11131c"
-            }
-
-            ThemeIcon {
-              anchors.centerIn: recordHalo
-              width: Style.space(6)
-              height: width
-              iconName: "media-record-symbolic"
-              iconColor: "#ffffff"
-            }
+          ThemeIcon {
+            visible: service.recordingActive
+            anchors.centerIn: recordHalo
+            width: Style.space(6)
+            height: width
+            iconName: "media-record-symbolic"
+            iconColor: "#ffffff"
           }
         }
       }
-      onPressed: function(buttonCode) {
-        if (buttonCode === Qt.RightButton) service.openDicta()
-        else if (buttonCode === Qt.MiddleButton) service.refresh(service.selectedProjectId)
-        else root.toggle()
+
+      MouseArea {
+        id: barActionArea
+        anchors.fill: parent
+        z: 10
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onEntered: if (root.bar) root.bar.showTooltip(panelButton, panelButton.tooltipText)
+        onExited: if (root.bar) root.bar.hideTooltip(panelButton)
+        onClicked: function(mouse) {
+          if (root.bar) root.bar.hideTooltip(panelButton)
+          if (mouse.button === Qt.RightButton) {
+            service.openDicta()
+          } else if (mouse.button === Qt.MiddleButton) {
+            service.refresh(service.selectedProjectId)
+          } else {
+            var hotspot = Style.space(13)
+            var recordingClick = mouse.x >= width - hotspot && mouse.y >= height - hotspot
+            if (recordingClick) service.toggleRecording()
+            else root.toggle()
+          }
+        }
       }
     }
   }

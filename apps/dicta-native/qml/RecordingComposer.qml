@@ -14,7 +14,7 @@ Item {
     property bool transitionBusy: bridge.runtimePhase === "preparing"
         || bridge.runtimePhase === "stopping"
     implicitHeight: annotationControls.visible
-        ? 112 * dictaTheme.spacingScale : 74 * dictaTheme.spacingScale
+        ? 100 * dictaTheme.spacingScale : 62 * dictaTheme.spacingScale
 
     Rectangle {
         anchors.fill: parent
@@ -44,8 +44,8 @@ Item {
             spacing: 12 * root.dictaTheme.spacingScale
 
             Image {
-                Layout.preferredWidth: 19 * root.dictaTheme.spacingScale
-                Layout.preferredHeight: 26 * root.dictaTheme.spacingScale
+                Layout.preferredWidth: 22 * root.dictaTheme.spacingScale
+                Layout.preferredHeight: 22 * root.dictaTheme.spacingScale
                 source: root.dictaTheme.mode === "light"
                     ? "qrc:/dicta/assets/dicta-mark.png"
                     : "qrc:/dicta/assets/dicta-mark-light.png"
@@ -56,7 +56,7 @@ Item {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignVCenter
-                spacing: 1 * root.dictaTheme.spacingScale
+                spacing: 0
 
                 TextField {
                     id: sessionNote
@@ -82,17 +82,6 @@ Item {
                     }
                 }
 
-                Text {
-                    Layout.fillWidth: true
-                    text: root.recording
-                        ? (root.bridge.activeRecordingId || "recording")
-                            + " · screen + desktop audio + microphone"
-                        : "screen + desktop audio + microphone"
-                    color: root.dictaTheme.darkForeground
-                    font.family: root.dictaTheme.fontFamily
-                    font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
-                    elide: Text.ElideRight
-                }
             }
 
             Rectangle {

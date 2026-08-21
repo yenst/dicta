@@ -858,10 +858,10 @@ where
                 if matches!(self.controller.snapshot().state, AppState::Annotating(_)) {
                     self.set_annotations_enabled(false)
                 } else {
-                    self.set_annotations_enabled(true)
+                    self.enable_pen_annotations()
                 }
             }
-            ControlCommand::AnnotationEnable => self.set_annotations_enabled(true),
+            ControlCommand::AnnotationEnable => self.enable_pen_annotations(),
             ControlCommand::AnnotationDisable => self.set_annotations_enabled(false),
             ControlCommand::AnnotationTool { tool } => self.set_annotation_tool(tool),
             ControlCommand::AnnotationUndo => self.annotation_edit(AnnotationEdit::Undo),
@@ -1614,6 +1614,11 @@ where
         Ok(Response::Accepted)
     }
 
+    fn enable_pen_annotations(&mut self) -> Result<Response, RuntimeError> {
+        self.set_annotations_enabled(true)?;
+        self.set_annotation_tool(AnnotationTool::Pen)
+    }
+
     fn set_annotation_tool(&mut self, tool: AnnotationTool) -> Result<Response, RuntimeError> {
         let session = self.require_annotating_session()?;
         if let Err(error) = self.annotations.set_tool(&session.recording_id, tool) {
@@ -1855,10 +1860,15 @@ fn status_from_snapshot(snapshot: &AppSnapshot, tool: AnnotationTool) -> StatusS
 }
 
 fn project_summary(project: &ProjectFile, selected: Option<&ProjectId>) -> ProjectSummary {
+    let branch = project
+        .source_path
+        .as_deref()
+        .and_then(|path| dicta_core::git::branch(Path::new(path)).ok());
     ProjectSummary {
         id: project.id.to_string(),
         name: project.name.clone(),
         path: project.source_path.clone(),
+        branch,
         selected: selected == Some(&project.id),
     }
 }
@@ -1972,6 +1982,24 @@ fn resolve_recording_from(
     }
 }
 
+const CONTEXT_TRANSCRIPT_LIMIT: usize = 1_200;
+
+fn transcript_excerpt(transcript: &str) -> String {
+    let transcript = transcript.split_whitespace().collect::<Vec<_>>().join(" ");
+    if transcript.chars().count() <= CONTEXT_TRANSCRIPT_LIMIT {
+        return transcript;
+    }
+    let mut excerpt = transcript
+        .chars()
+        .take(CONTEXT_TRANSCRIPT_LIMIT)
+        .collect::<String>();
+    if let Some(boundary) = excerpt.rfind(char::is_whitespace) {
+        excerpt.truncate(boundary);
+    }
+    excerpt.push_str("…\n\n_(Transcript truncated; open the recording for the full text.)_");
+    excerpt
+}
+
 fn render_recording_context(recording: &RecordingFile, project_name: &str) -> String {
     let mut output = format!(
         "# Dicta recording: {}\n\nProject: {} (`{}`)\n",
@@ -1990,7 +2018,8 @@ fn render_recording_context(recording: &RecordingFile, project_name: &str) -> St
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let _ = writeln!(output, "\n## Transcript\n\n{transcript}");
+        let excerpt = transcript_excerpt(transcript);
+        let _ = writeln!(output, "\n## Transcript excerpt\n\n{excerpt}");
     }
     if !recording.timeline_notes.is_empty() {
         output.push_str("\n## Timeline notes\n");
@@ -2687,7 +2716,14 @@ mod tests {
         assert_eq!(runtime.transcription.starts, 1);
         assert_eq!(
             runtime.annotations.operations,
-            ["enabled:true", "tool:Arrow", "undo", "clear", "finish"]
+            [
+                "enabled:true",
+                "tool:Pen",
+                "tool:Arrow",
+                "undo",
+                "clear",
+                "finish"
+            ]
         );
 
         let sequences: Vec<_> = runtime.events().iter().map(event_sequence).collect();

@@ -11,8 +11,56 @@ Item {
     property int currentTab: 0
     property bool confirmDelete: false
     property bool copied: false
+    property bool keyboardActive: false
+    property int keyboardTarget: 0
+    readonly property bool noteEditorFocused: noteField.activeFocus
     property var recording: bridge.selectedRecording || ({})
     property bool hasRecording: Boolean(recording.id)
+    signal keyboardFocusRequested()
+
+    function resetKeyboardTarget() {
+        keyboardTarget = 0
+    }
+
+    function moveKeyboardHorizontal(delta) {
+        if (keyboardTarget === 3) {
+            if (delta < 0 && currentTab === 0) {
+                keyboardTarget = 0
+                return true
+            }
+            currentTab = Math.max(0, Math.min(2, currentTab + delta))
+            return true
+        }
+        var next = keyboardTarget + delta
+        if (next < 0)
+            return false
+        keyboardTarget = Math.min(2, next)
+        return true
+    }
+
+    function moveKeyboardVertical(delta) {
+        if (delta > 0 && keyboardTarget !== 3) {
+            keyboardTarget = 3
+            return true
+        }
+        if (delta < 0 && keyboardTarget === 3) {
+            keyboardTarget = 0
+            return true
+        }
+        return false
+    }
+
+    function activateKeyboardTarget() {
+        if (keyboardTarget === 0)
+            return togglePlayback()
+        if (keyboardTarget === 1)
+            return copyContext()
+        if (keyboardTarget === 2) {
+            actionPopup.open()
+            return true
+        }
+        return keyboardTarget === 3
+    }
 
     function playbackPosition() {
         return playerLoader.active && playerLoader.item
@@ -22,6 +70,40 @@ Item {
     function seek(seconds) {
         if (playerLoader.active && playerLoader.item)
             playerLoader.item.seek(seconds)
+    }
+
+    function togglePlayback() {
+        if (playerLoader.active && playerLoader.item) {
+            playerLoader.item.togglePlayback()
+            return true
+        }
+        return bridge.openSelectedRecording()
+    }
+
+    function copyContext() {
+        if (!bridge.copySelectedContext())
+            return false
+        copied = true
+        copiedTimer.restart()
+        return true
+    }
+
+    function promptDelete() {
+        if (!hasRecording || bridge.runtimePhase !== "idle")
+            return false
+        confirmDelete = true
+        deleteConfirmTimer.restart()
+        actionPopup.open()
+        return true
+    }
+
+    function confirmDeleteNow() {
+        if (!confirmDelete)
+            return false
+        var removed = bridge.deleteSelectedRecording()
+        confirmDelete = false
+        actionPopup.close()
+        return removed
     }
 
     function duration(seconds) {
@@ -70,14 +152,6 @@ Item {
         return chapters
     }
 
-    function annotationLabel() {
-        var count = Number(recording.annotation_count || 0)
-            + Number((recording.timeline_notes || []).length)
-        if (count > 0)
-            return count + (count === 1 ? " mark" : " marks")
-        return recording.annotation_path ? "annotations" : "no marks"
-    }
-
     function hasTimelineNoteAt(seconds) {
         var notes = recording.timeline_notes || []
         for (var i = 0; i < notes.length; ++i) {
@@ -118,7 +192,7 @@ Item {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 4 * root.dictaTheme.spacingScale
+                spacing: 0
                 Text {
                     Layout.fillWidth: true
                     text: root.recording.note || root.recording.id || "Recording"
@@ -126,16 +200,6 @@ Item {
                     font.family: root.dictaTheme.fontFamily
                     font.pixelSize: root.dictaTheme.baseFontSize + 3
                     font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: root.recording.transcript
-                        ? String(root.recording.transcript).split(/\s+/).slice(0, 18).join(" ")
-                        : (root.recording.id || "")
-                    color: root.dictaTheme.darkForeground
-                    font.family: root.dictaTheme.fontFamily
-                    font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
                     elide: Text.ElideRight
                 }
             }
@@ -148,116 +212,39 @@ Item {
                 font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
             }
             FlatButton {
+                objectName: "copyContext"
+                dictaTheme: root.dictaTheme
+                iconName: "copy"
+                iconOnly: true
+                quiet: true
+                toolTip: root.copied ? "Context copied" : "Copy context"
+                selected: root.keyboardActive && root.keyboardTarget === 1 || root.copied
+                onClicked: root.copyContext()
+            }
+            FlatButton {
+                objectName: "recordingMoreActions"
                 dictaTheme: root.dictaTheme
                 iconName: "more"
                 iconOnly: true
                 quiet: true
                 toolTip: "Recording actions"
-                onClicked: actionMenu.open()
-
-                Menu {
-                    id: actionMenu
-                    y: parent.height
-                    background: Rectangle {
-                        color: root.dictaTheme.darkBackground
-                        border.width: 1
-                        border.color: root.dictaTheme.muted
-                        radius: 3 * root.dictaTheme.spacingScale
-                    }
-                    MenuItem {
-                        text: "Open recording"
-                        onTriggered: root.bridge.openSelectedRecording()
-                    }
-                    MenuItem {
-                        id: transcribeAction
-                        objectName: "transcribeRecording"
-                        text: root.recording.transcription_status === "failed"
-                            ? "Retry transcription" : "Transcribe again"
-                        enabled: root.bridge.runtimePhase === "idle" && Boolean(root.recording.success)
-                        onTriggered: root.bridge.transcribeSelectedRecording()
-                    }
-                    MenuSeparator {}
-                    MenuItem {
-                        id: deleteAction
-                        objectName: "deleteRecording"
-                        text: root.confirmDelete ? "Confirm delete" : "Delete recording"
-                        enabled: root.bridge.runtimePhase === "idle"
-                        onTriggered: {
-                            if (root.confirmDelete) {
-                                root.bridge.deleteSelectedRecording()
-                                root.confirmDelete = false
-                            } else {
-                                root.confirmDelete = true
-                                deleteConfirmTimer.restart()
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: 22 * root.dictaTheme.spacingScale
-            Layout.rightMargin: 18 * root.dictaTheme.spacingScale
-            Layout.topMargin: 8 * root.dictaTheme.spacingScale
-            Layout.bottomMargin: 32 * root.dictaTheme.spacingScale
-            spacing: 10 * root.dictaTheme.spacingScale
-            Text {
-                text: root.duration(root.recording.duration_seconds)
-                color: root.dictaTheme.darkForeground
-                font.family: root.dictaTheme.fontFamily
-                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
-            }
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: 14 * root.dictaTheme.spacingScale
-                color: root.dictaTheme.muted
-            }
-            Text {
-                text: root.recording.transcription_status === "complete"
-                    ? "Transcribed"
-                    : root.recording.transcription_status === "failed"
-                        ? "Retry needed"
-                        : (root.recording.transcription_status || "Unavailable")
-                color: root.recording.transcription_status === "failed"
-                    ? root.dictaTheme.yellow
-                    : root.recording.transcription_status === "complete"
-                        ? root.dictaTheme.accent : root.dictaTheme.darkForeground
-                font.family: root.dictaTheme.fontFamily
-                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
-            }
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: 14 * root.dictaTheme.spacingScale
-                color: root.dictaTheme.muted
-            }
-            Text {
-                text: root.annotationLabel()
-                color: root.dictaTheme.darkForeground
-                font.family: root.dictaTheme.fontFamily
-                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
-            }
-            Item { Layout.fillWidth: true }
-            Text {
-                visible: Boolean(root.recording.git_branch)
-                text: root.recording.recording_scope === "repository"
-                    ? "repository" : (root.recording.git_branch || "")
-                color: root.dictaTheme.accent
-                font.family: root.dictaTheme.fontFamily
-                font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
+                selected: root.keyboardActive && root.keyboardTarget === 2
+                onClicked: actionPopup.open()
             }
         }
 
         Rectangle {
+            id: playerSurface
+            objectName: "playerKeyboardSurface"
             Layout.fillWidth: true
             Layout.leftMargin: 22 * root.dictaTheme.spacingScale
             Layout.rightMargin: 22 * root.dictaTheme.spacingScale
             Layout.preferredHeight: Math.max(190 * root.dictaTheme.spacingScale,
                 Math.min(370 * root.dictaTheme.spacingScale, root.height * 0.43))
             color: root.dictaTheme.darkerBackground
-            border.width: 1
-            border.color: root.dictaTheme.muted
+            border.color: root.keyboardActive && root.keyboardTarget === 0
+                ? root.dictaTheme.accent : root.dictaTheme.muted
+            border.width: root.keyboardActive && root.keyboardTarget === 0 ? 3 : 1
             radius: 4 * root.dictaTheme.spacingScale
             clip: true
 
@@ -269,10 +256,22 @@ Item {
                     && Boolean(root.recording.video_url)
                 source: active ? Qt.resolvedUrl("RecordingPlayer.qml") : ""
                 onLoaded: {
-                    item.source = root.recording.video_url
-                    item.posterSource = root.recording.preview_image_url || ""
                     item.dictaTheme = root.dictaTheme
                 }
+            }
+
+            Binding {
+                target: playerLoader.item
+                property: "source"
+                value: root.recording.video_url || ""
+                when: playerLoader.status === Loader.Ready
+            }
+
+            Binding {
+                target: playerLoader.item
+                property: "posterSource"
+                value: root.recording.preview_image_url || ""
+                when: playerLoader.status === Loader.Ready
             }
 
             Image {
@@ -407,6 +406,9 @@ Item {
                     required property string modelData
                     required property int index
                     text: modelData
+                    objectName: "detailTab-" + index
+                    Layout.preferredWidth: 92 * root.dictaTheme.spacingScale
+                    Layout.preferredHeight: 42 * root.dictaTheme.spacingScale
                     hoverEnabled: true
                     onClicked: root.currentTab = index
                     contentItem: Text {
@@ -415,13 +417,22 @@ Item {
                             ? root.dictaTheme.accent : root.dictaTheme.darkForeground
                         font.family: root.dictaTheme.fontFamily
                         font.pixelSize: root.dictaTheme.baseFontSize
-                        font.weight: root.currentTab === tabButton.index
-                            ? Font.DemiBold : Font.Normal
+                        font.weight: Font.Medium
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                     }
-                    background: Item {
+                    background: Rectangle {
                         implicitHeight: 42 * root.dictaTheme.spacingScale
+                        radius: 3 * root.dictaTheme.spacingScale
+                        color: root.keyboardActive && root.keyboardTarget === 3
+                                && root.currentTab === tabButton.index
+                            ? Qt.rgba(root.dictaTheme.accent.r,
+                                root.dictaTheme.accent.g,
+                                root.dictaTheme.accent.b, 0.1)
+                            : "transparent"
+                        border.width: root.keyboardActive && root.keyboardTarget === 3
+                                && root.currentTab === tabButton.index ? 2 : 0
+                        border.color: root.dictaTheme.accent
                         Rectangle {
                             visible: root.currentTab === tabButton.index
                             anchors.left: parent.left
@@ -499,14 +510,17 @@ Item {
                                         color: root.dictaTheme.red
                                     }
                                 }
-                                Text {
+                                TextEdit {
                                     Layout.fillWidth: true
                                     text: segmentRow.modelData.text
+                                    readOnly: true
+                                    selectByMouse: true
+                                    selectionColor: root.dictaTheme.selection
+                                    selectedTextColor: root.dictaTheme.brightForeground
                                     color: root.dictaTheme.foreground
                                     font.family: root.dictaTheme.fontFamily
                                     font.pixelSize: root.dictaTheme.baseFontSize
-                                    lineHeight: 1.45
-                                    wrapMode: Text.Wrap
+                                    wrapMode: TextEdit.Wrap
                                 }
                             }
                             Rectangle {
@@ -546,6 +560,7 @@ Item {
                     Repeater {
                         model: root.chapterRows()
                         delegate: RowLayout {
+                            id: chapterRow
                             required property var modelData
                             Layout.fillWidth: true
                             Layout.leftMargin: 24 * root.dictaTheme.spacingScale
@@ -555,7 +570,7 @@ Item {
                             spacing: 20 * root.dictaTheme.spacingScale
                             Text {
                                 Layout.preferredWidth: 52 * root.dictaTheme.spacingScale
-                                text: root.timestamp(noteRow.modelData.timestamp_seconds)
+                                text: root.timestamp(chapterRow.modelData.timestamp_seconds)
                                 color: root.dictaTheme.accent
                                 font.family: root.dictaTheme.fontFamily
                                 font.pixelSize: root.dictaTheme.baseFontSize
@@ -766,50 +781,110 @@ Item {
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            color: Qt.rgba(root.dictaTheme.muted.r, root.dictaTheme.muted.g,
-                root.dictaTheme.muted.b, 0.55)
+    }
+
+    Rectangle {
+        objectName: "detailKeyboardBorder"
+        anchors.fill: parent
+        z: 90
+        color: "transparent"
+        border.width: root.keyboardActive ? 3 : 0
+        border.color: root.dictaTheme.accent
+        visible: root.keyboardActive
+    }
+
+    Popup {
+        id: actionPopup
+        objectName: "recordingActionPopup"
+        x: root.width - width - 18 * root.dictaTheme.spacingScale
+        y: 56 * root.dictaTheme.spacingScale
+        z: 100
+        width: 230 * root.dictaTheme.spacingScale
+        padding: 6 * root.dictaTheme.spacingScale
+        modal: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onClosed: {
+            root.confirmDelete = false
+            root.keyboardFocusRequested()
+        }
+        onOpened: actionContent.forceActiveFocus()
+
+        background: Rectangle {
+            color: root.dictaTheme.darkBackground
+            border.width: 1
+            border.color: root.dictaTheme.muted
+            radius: 4 * root.dictaTheme.spacingScale
         }
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 60 * root.dictaTheme.spacingScale
-            Layout.leftMargin: 14 * root.dictaTheme.spacingScale
-            Layout.rightMargin: 14 * root.dictaTheme.spacingScale
-            Layout.topMargin: 6 * root.dictaTheme.spacingScale
-            Layout.bottomMargin: 6 * root.dictaTheme.spacingScale
-            spacing: 4 * root.dictaTheme.spacingScale
-
-            FlatButton {
-                dictaTheme: root.dictaTheme
-                text: root.copied ? "Copied" : "Copy context"
-                iconName: "copy"
-                selected: root.copied
-                quiet: true
-                onClicked: {
-                    if (root.bridge.copySelectedContext()) {
-                        root.copied = true
-                        copiedTimer.restart()
-                    }
+        contentItem: ColumnLayout {
+            id: actionContent
+            focus: true
+            spacing: 3 * root.dictaTheme.spacingScale
+            Keys.onPressed: event => {
+                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                        && root.confirmDelete) {
+                    root.confirmDeleteNow()
+                    event.accepted = true
                 }
             }
             FlatButton {
+                Layout.fillWidth: true
+                dictaTheme: root.dictaTheme
+                text: "Open externally"
+                iconName: "play"
+                quiet: true
+                onClicked: {
+                    root.bridge.openSelectedRecording()
+                    actionPopup.close()
+                }
+            }
+            FlatButton {
+                objectName: "transcribeRecording"
+                Layout.fillWidth: true
+                dictaTheme: root.dictaTheme
+                text: root.recording.transcription_status === "failed"
+                    ? "Retry transcription" : "Transcribe again"
+                iconName: "microphone"
+                quiet: true
+                enabled: root.bridge.runtimePhase === "idle"
+                    && Boolean(root.recording.success)
+                onClicked: {
+                    root.bridge.transcribeSelectedRecording()
+                    actionPopup.close()
+                }
+            }
+            FlatButton {
+                Layout.fillWidth: true
                 dictaTheme: root.dictaTheme
                 text: "Reveal files"
                 iconName: "folder-open"
                 quiet: true
-                onClicked: root.bridge.revealSelectedRecording()
+                onClicked: {
+                    root.bridge.revealSelectedRecording()
+                    actionPopup.close()
+                }
             }
-            Item { Layout.fillWidth: true }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: root.dictaTheme.muted
+            }
             FlatButton {
+                objectName: "deleteRecording"
+                Layout.fillWidth: true
                 dictaTheme: root.dictaTheme
-                iconName: "more"
-                iconOnly: true
+                text: root.confirmDelete ? "Confirm delete" : "Delete recording"
+                iconName: "clear"
                 quiet: true
-                toolTip: "More actions"
-                onClicked: actionMenu.open()
+                destructive: true
+                enabled: root.bridge.runtimePhase === "idle"
+                onClicked: {
+                    if (root.confirmDelete)
+                        root.confirmDeleteNow()
+                    else
+                        root.promptDelete()
+                }
             }
         }
     }

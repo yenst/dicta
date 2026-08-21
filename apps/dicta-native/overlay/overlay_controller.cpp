@@ -140,17 +140,23 @@ bool OverlayController::showOnOutput(const QString &outputName)
         return false;
     }
 
-    setAnnotationMode(false);
+    m_sessionActive = true;
+    m_window->hide();
+    applyWindowInputMode(*m_window, false);
+    m_window->setScreen(screen);
+    m_window->setGeometry(screen->geometry());
+    m_window->setProperty("annotationMode", false);
+    m_surface->setAnnotationMode(false);
     m_surface->clear();
-    QString error;
-    if (!m_placement->show(*m_window, *screen, &error)) {
-        fail(error);
-        return false;
-    }
 
     if (m_outputName != screen->name()) {
         m_outputName = screen->name();
         emit outputNameChanged();
+    }
+    if (!QMetaObject::invokeMethod(m_window, "showHelper")) {
+        m_sessionActive = false;
+        fail(tr("The annotation helper could not be shown."));
+        return false;
     }
     return true;
 }
@@ -181,17 +187,35 @@ void OverlayController::setAnnotationMode(const bool enabled)
         fail(tr("The annotation overlay is not ready."));
         return;
     }
-    if (enabled && !m_window->isVisible()) {
-        fail(tr("The annotation overlay must be visible before it can capture input."));
+    if (enabled && !m_sessionActive) {
+        fail(tr("Recording must be active before annotations can capture input."));
         return;
     }
 
-    applyWindowInputMode(*m_window, enabled);
     m_window->setProperty("annotationMode", enabled);
     m_surface->setAnnotationMode(enabled);
     if (enabled) {
+        QScreen *screen = findOutput(m_outputName);
+        if (screen == nullptr) {
+            m_window->setProperty("annotationMode", false);
+            m_surface->setAnnotationMode(false);
+            fail(tr("Recording output '%1' is not available.").arg(m_outputName));
+            return;
+        }
+        applyWindowInputMode(*m_window, true);
+        QString error;
+        if (!m_placement->show(*m_window, *screen, &error)) {
+            m_window->setProperty("annotationMode", false);
+            m_surface->setAnnotationMode(false);
+            applyWindowInputMode(*m_window, false);
+            fail(error);
+            return;
+        }
         m_window->requestActivate();
         m_surface->forceActiveFocus();
+    } else {
+        m_window->hide();
+        applyWindowInputMode(*m_window, false);
     }
 }
 
@@ -220,7 +244,7 @@ void OverlayController::applyWindowInputMode(
             window.setScreen(screen);
         }
         window.setGeometry(geometry);
-        window.showFullScreen();
+        window.show();
     }
 }
 
@@ -271,8 +295,12 @@ void OverlayController::finishAndHide()
         return;
     }
 
-    setAnnotationMode(false);
+    m_sessionActive = false;
+    m_window->setProperty("annotationMode", false);
+    m_surface->setAnnotationMode(false);
     m_window->hide();
+    applyWindowInputMode(*m_window, false);
+    QMetaObject::invokeMethod(m_window, "hideHelper");
     m_surface->clear();
     emit sessionFinished();
 }

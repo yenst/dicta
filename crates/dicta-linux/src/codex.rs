@@ -220,7 +220,7 @@ where
             }
             return Err(format!("Codex MCP query failed: {diagnostic}"));
         }
-        serde_json::from_slice::<RegistrationDocument>(&output.stdout)
+        registration_document(&output.stdout)
             .map(|document| Some(document.transport))
             .map_err(|error| format!("Codex returned invalid MCP status JSON: {error}"))
     }
@@ -318,6 +318,22 @@ where
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
+fn registration_document(output: &[u8]) -> Result<RegistrationDocument, serde_json::Error> {
+    if let Ok(document) = serde_json::from_slice(output) {
+        return Ok(document);
+    }
+
+    // Launchers such as mise may print an informational line before forwarding
+    // Codex's JSON. Parse the single JSON object without accepting arbitrary
+    // trailing output as part of the status document.
+    let start = output.iter().position(|byte| *byte == b'{').unwrap_or(0);
+    let end = output
+        .iter()
+        .rposition(|byte| *byte == b'}')
+        .map_or(output.len(), |index| index + 1);
+    serde_json::from_slice(&output[start..end])
+}
+
 fn discover_mcp_path() -> Option<PathBuf> {
     if let Some(path) = explicit_executable("DICTA_MCP_BIN") {
         return Some(path);
@@ -404,6 +420,7 @@ mod tests {
         registration: Option<Registration>,
         calls: Vec<Vec<OsString>>,
         fail_next_add: bool,
+        prefix_status_json: bool,
     }
 
     impl CodexProcess for FakeProcess {
@@ -418,17 +435,25 @@ mod tests {
                 match &state.registration {
                     Some(registration) => CodexProcessOutput {
                         success: true,
-                        stdout: serde_json::to_vec(&serde_json::json!({
-                            "transport": match registration {
-                                Registration::Stdio { command, args, env } => serde_json::json!({
-                                    "type": "stdio", "command": command, "args": args, "env": env,
-                                }),
-                                Registration::Http { url } => serde_json::json!({
-                                    "type": "http", "url": url,
-                                }),
+                        stdout: {
+                            let json = serde_json::to_vec(&serde_json::json!({
+                                "transport": match registration {
+                                    Registration::Stdio { command, args, env } => serde_json::json!({
+                                        "type": "stdio", "command": command, "args": args, "env": env,
+                                    }),
+                                    Registration::Http { url } => serde_json::json!({
+                                        "type": "http", "url": url,
+                                    }),
+                                }
+                            }))
+                            .unwrap();
+                            if state.prefix_status_json {
+                                [b"mise tools: codex@0.148.0\n".as_slice(), json.as_slice()]
+                                    .concat()
+                            } else {
+                                json
                             }
-                        }))
-                        .unwrap(),
+                        },
                         stderr: Vec::new(),
                     },
                     None => CodexProcessOutput {
@@ -528,5 +553,16 @@ mod tests {
             process.state.lock().unwrap().registration,
             Some(Registration::stdio(&previous))
         );
+    }
+
+    #[test]
+    fn status_accepts_launcher_information_before_codex_json() {
+        let (codex, mcp) = fixture();
+        let process = FakeProcess::default();
+        process.state.lock().unwrap().registration = Some(Registration::stdio(&mcp));
+        process.state.lock().unwrap().prefix_status_json = true;
+        let integration = CodexMcpIntegration::new(process, Some(codex), Some(mcp));
+
+        assert_eq!(integration.status().state, CodexMcpState::Connected);
     }
 }

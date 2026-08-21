@@ -22,6 +22,15 @@ grep -Fxq 'require("hypr.dicta-bindings")' "$fixture/config/hypr/bindings.lua"
 grep -Fxq 'hl.unbind("CTRL + SPACE")' "$fixture/config/hypr/dicta-bindings.lua"
 grep -Fxq 'o.bind("CTRL + SPACE", "Toggle Dicta recording", "dicta record toggle")' \
   "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fxq 'hl.unbind("SUPER + ALT + A")' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fxq 'hl.unbind("F8")' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fxq 'o.bind("F8", "Draw Dicta annotation (hold)", "dicta annotate enable")' \
+  "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fxq 'o.bind("F8", nil, "dicta annotate disable", { release = true })' \
+  "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fq 'title = "^Dicta Annotation Overlay$"' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fq 'title = "^Dicta Annotation Helper$"' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fq 'float = true' "$fixture/config/hypr/dicta-bindings.lua"
 [[ "$(find "$fixture/config/hypr" -maxdepth 1 -type f -name 'bindings.lua.dicta-backup.*' | wc -l)" -ge 1 ]]
 
 XDG_CONFIG_HOME="$fixture/config" \

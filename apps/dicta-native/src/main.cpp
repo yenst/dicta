@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QPointer>
 #include <QQuickWindow>
 #include <QQmlApplicationEngine>
@@ -84,6 +85,7 @@ int main(int argc, char *argv[])
     application.setApplicationName(QStringLiteral("Dicta"));
     application.setApplicationVersion(QStringLiteral(DICTA_NATIVE_VERSION));
     application.setOrganizationName(QStringLiteral("Dicta"));
+    application.setWindowIcon(QIcon(QStringLiteral("qrc:/dicta/assets/dicta-mark.png")));
 
     ThemeBridge themeBridge;
 

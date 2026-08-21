@@ -105,6 +105,11 @@ impl LinuxTranscriptionConfig {
             std::env::var_os("DICTA_VOXTYPE_BIN").filter(|value| !value.is_empty())
         {
             backend.voxtype_program = PathBuf::from(program);
+        } else {
+            let vulkan_backend = PathBuf::from("/usr/lib/voxtype/voxtype-vulkan");
+            if vulkan_backend.is_file() && Path::new("/dev/dri/renderD128").exists() {
+                backend.voxtype_program = vulkan_backend;
+            }
         }
         let mut installer = ModelInstallerConfig::default();
         if let Some(program) = std::env::var_os("DICTA_CURL_BIN").filter(|value| !value.is_empty())

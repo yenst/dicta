@@ -7,8 +7,9 @@ import QtMultimedia
 
 Item {
     id: root
+    objectName: "recordingPlayer"
 
-    required property url source
+    property url source
     property url posterSource
     property QtObject dictaTheme
     readonly property real positionSeconds: player.position / 1000
@@ -19,6 +20,13 @@ Item {
 
     function pause() {
         player.pause()
+    }
+
+    function togglePlayback() {
+        if (player.playbackState === MediaPlayer.PlayingState)
+            player.pause()
+        else
+            player.play()
     }
 
     function duration(value) {
@@ -37,6 +45,10 @@ Item {
         source: root.source
         videoOutput: videoOutput
         audioOutput: AudioOutput { id: audioOutput }
+        onSourceChanged: {
+            stop()
+            setPosition(0)
+        }
     }
 
     VideoOutput {
@@ -68,8 +80,7 @@ Item {
             iconOnly: true
             quiet: true
             toolTip: player.playbackState === MediaPlayer.PlayingState ? "Pause" : "Play"
-            onClicked: player.playbackState === MediaPlayer.PlayingState
-                ? player.pause() : player.play()
+            onClicked: root.togglePlayback()
         }
         Text {
             text: root.duration(player.position) + " / " + root.duration(player.duration)
@@ -135,6 +146,5 @@ Item {
         font.pixelSize: root.dictaTheme ? root.dictaTheme.baseFontSize : 12
     }
 
-    Component.onCompleted: player.play()
     Component.onDestruction: player.stop()
 }

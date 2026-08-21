@@ -3,6 +3,7 @@ use crate::{
     ModelPreparationStage, ModelProvider, ModelSelection, PreparedModel, TranscriptionBackend,
     TranscriptionError, TranscriptionOutput,
 };
+use dicta_core::TranscriptSegment;
 use std::{
     ffi::OsString,
     fs,
@@ -16,6 +17,7 @@ use std::{
     thread,
     time::Duration,
 };
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -264,6 +266,9 @@ pub struct VoxtypeBackendConfig {
     pub ffmpeg_program: PathBuf,
     pub voxtype_program: PathBuf,
     pub temporary_root: PathBuf,
+    /// Use whisper.cpp directly so Dicta receives real segment timestamps.
+    /// The Voxtype subprocess remains as an explicit compatibility fallback.
+    pub timestamped_whisper: bool,
 }
 
 impl Default for VoxtypeBackendConfig {
@@ -272,6 +277,7 @@ impl Default for VoxtypeBackendConfig {
             ffmpeg_program: PathBuf::from("ffmpeg"),
             voxtype_program: PathBuf::from("voxtype"),
             temporary_root: std::env::temp_dir(),
+            timestamped_whisper: true,
         }
     }
 }
@@ -296,9 +302,10 @@ impl VoxtypeBackendFactory {
     pub fn is_available(&self) -> bool {
         self.executor
             .executable_available(&self.config.ffmpeg_program)
-            && self
-                .executor
-                .executable_available(&self.config.voxtype_program)
+            && (self.config.timestamped_whisper
+                || self
+                    .executor
+                    .executable_available(&self.config.voxtype_program))
     }
 }
 
@@ -322,15 +329,28 @@ impl BackendFactory for VoxtypeBackendFactory {
                 false,
             ));
         }
-        progress(LoadProgress::new(
-            1,
-            Some(1),
-            "Voxtype local Whisper backend ready",
-        ));
+        let inference = if self.config.timestamped_whisper {
+            progress(LoadProgress::new(0, Some(1), "loading local Whisper model"));
+            whisper_rs::install_logging_hooks();
+            let context =
+                WhisperContext::new_with_params(&model.path, WhisperContextParameters::default())
+                    .map_err(|error| {
+                    TranscriptionError::new(
+                        FailureKind::BackendLoad,
+                        format!("could not load local Whisper model: {error}"),
+                        false,
+                    )
+                })?;
+            InferenceEngine::Timestamped(context)
+        } else {
+            InferenceEngine::Voxtype
+        };
+        progress(LoadProgress::new(1, Some(1), "local Whisper backend ready"));
         Ok(Box::new(VoxtypeBackend {
             config: self.config.clone(),
             executor: Arc::clone(&self.executor),
             model: model.clone(),
+            inference,
         }))
     }
 }
@@ -339,6 +359,12 @@ struct VoxtypeBackend {
     config: VoxtypeBackendConfig,
     executor: Arc<dyn ProcessExecutor>,
     model: PreparedModel,
+    inference: InferenceEngine,
+}
+
+enum InferenceEngine {
+    Timestamped(WhisperContext),
+    Voxtype,
 }
 
 impl TranscriptionBackend for VoxtypeBackend {
@@ -389,36 +415,144 @@ impl TranscriptionBackend for VoxtypeBackend {
         }
 
         progress(1, Some(2), "transcribing narration locally".to_owned());
-        let inference = self
-            .executor
-            .output(&voxtype_plan(
-                &self.config.voxtype_program,
-                temporary.data_root(),
-                self.model.kind,
-                temporary.audio_path(),
-                language,
-            ))
-            .map_err(|error| process_io_error("voxtype", error))?;
-        if !inference.success {
-            return Err(process_failure(
-                "voxtype",
-                &inference,
-                FailureKind::Inference,
-            ));
-        }
-        let transcript = parse_voxtype_stdout(&inference.stdout);
-        if transcript.is_empty() {
-            return Err(TranscriptionError::new(
-                FailureKind::InvalidOutput,
-                "Voxtype returned no detected speech",
-                false,
-            ));
-        }
+        let mut output = match &mut self.inference {
+            InferenceEngine::Timestamped(context) => {
+                transcribe_timestamped(context, temporary.audio_path(), language)?
+            }
+            InferenceEngine::Voxtype => {
+                let inference = self
+                    .executor
+                    .output(&voxtype_plan(
+                        &self.config.voxtype_program,
+                        temporary.data_root(),
+                        self.model.kind,
+                        temporary.audio_path(),
+                        language,
+                    ))
+                    .map_err(|error| process_io_error("voxtype", error))?;
+                if !inference.success {
+                    return Err(process_failure(
+                        "voxtype",
+                        &inference,
+                        FailureKind::Inference,
+                    ));
+                }
+                let transcript = parse_voxtype_stdout(&inference.stdout);
+                if transcript.is_empty() {
+                    return Err(TranscriptionError::new(
+                        FailureKind::InvalidOutput,
+                        "Voxtype returned no detected speech",
+                        false,
+                    ));
+                }
+                TranscriptionOutput::new(transcript, Vec::new())
+            }
+        };
         progress(2, Some(2), "transcription complete".to_owned());
-        let mut output = TranscriptionOutput::new(transcript, Vec::new());
-        output.detected_language = language.whisper_language().map(str::to_owned);
+        if output.detected_language.is_none() {
+            output.detected_language = language.whisper_language().map(str::to_owned);
+        }
         Ok(output)
     }
+}
+
+fn transcribe_timestamped(
+    context: &WhisperContext,
+    audio_path: &Path,
+    language: Language,
+) -> Result<TranscriptionOutput, TranscriptionError> {
+    let mut reader = hound::WavReader::open(audio_path).map_err(|error| {
+        TranscriptionError::new(
+            FailureKind::Input,
+            format!("could not read normalized narration audio: {error}"),
+            false,
+        )
+    })?;
+    let spec = reader.spec();
+    if spec.channels != 1 || spec.sample_rate != 16_000 || spec.bits_per_sample != 16 {
+        return Err(TranscriptionError::new(
+            FailureKind::Input,
+            "normalized narration audio must be mono 16 kHz PCM16",
+            false,
+        ));
+    }
+    let integer_samples = reader
+        .samples::<i16>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            TranscriptionError::new(
+                FailureKind::Input,
+                format!("could not decode normalized narration audio: {error}"),
+                false,
+            )
+        })?;
+    let mut samples = vec![0.0_f32; integer_samples.len()];
+    whisper_rs::convert_integer_to_float_audio(&integer_samples, &mut samples).map_err(
+        |error| {
+            TranscriptionError::new(
+                FailureKind::Input,
+                format!("could not prepare narration samples: {error}"),
+                false,
+            )
+        },
+    )?;
+
+    let mut state = context.create_state().map_err(|error| {
+        TranscriptionError::new(
+            FailureKind::BackendLoad,
+            format!("could not create local Whisper state: {error}"),
+            true,
+        )
+    })?;
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(language.whisper_language());
+    params.set_detect_language(matches!(language, Language::Auto));
+    params.set_initial_prompt(technical_prompt(language));
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_token_timestamps(true);
+    params.set_n_threads(
+        std::thread::available_parallelism().map_or(4, |count| count.get().min(8)) as i32,
+    );
+    state.full(params, &samples).map_err(|error| {
+        TranscriptionError::new(
+            FailureKind::Inference,
+            format!("local Whisper inference failed: {error}"),
+            true,
+        )
+    })?;
+
+    let segments = state
+        .as_iter()
+        .filter_map(|segment| {
+            let text = segment.to_string().trim().to_owned();
+            (!text.is_empty()).then_some(TranscriptSegment {
+                start_seconds: segment.start_timestamp() as f64 / 100.0,
+                end_seconds: segment.end_timestamp() as f64 / 100.0,
+                text,
+            })
+        })
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        return Err(TranscriptionError::new(
+            FailureKind::InvalidOutput,
+            "Whisper returned no timed speech segments",
+            false,
+        ));
+    }
+    let transcript = segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let detected_language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
+        .map(str::to_owned)
+        .or_else(|| language.whisper_language().map(str::to_owned));
+    let mut output = TranscriptionOutput::new(transcript, segments);
+    output.detected_language = detected_language;
+    Ok(output)
 }
 
 fn parse_voxtype_stdout(stdout: &[u8]) -> String {
@@ -711,6 +845,7 @@ mod tests {
                 ffmpeg_program: PathBuf::from("ffmpeg"),
                 voxtype_program: PathBuf::from("voxtype"),
                 temporary_root: temporary.clone(),
+                timestamped_whisper: false,
             },
             executor.clone(),
         );
