@@ -1,5 +1,6 @@
 pub mod annotations;
 pub mod branch;
+pub mod catalog;
 pub mod git;
 mod ids;
 mod models;

@@ -144,7 +144,7 @@ dependencies = [
 name = "dicta-control"
 version = "0.1.0"
 dependencies = [
- "dicta-core",
+ "chrono",
  "rustix",
  "serde",
  "serde_json",
@@ -215,6 +215,7 @@ dependencies = [
  "dicta-core",
  "dicta-engine",
  "dicta-transcribe",
+ "serde_json",
 ]
 
 [[package]]

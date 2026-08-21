@@ -16,8 +16,8 @@ pub fn retry_candidates(recordings: impl IntoIterator<Item = RecordingFile>) -> 
         })
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
-        retry_rank(left.transcription_status)
-            .cmp(&retry_rank(right.transcription_status))
+        retry_rank(&left.transcription_status)
+            .cmp(&retry_rank(&right.transcription_status))
             .then_with(|| left.started_at.cmp(&right.started_at))
             .then_with(|| left.id.cmp(&right.id))
             .then_with(|| left.project_id.cmp(&right.project_id))
@@ -25,13 +25,13 @@ pub fn retry_candidates(recordings: impl IntoIterator<Item = RecordingFile>) -> 
     candidates
 }
 
-const fn retry_rank(status: TranscriptionStatus) -> u8 {
+fn retry_rank(status: &TranscriptionStatus) -> u8 {
     match status {
         TranscriptionStatus::Pending => 0,
         TranscriptionStatus::Failed => 1,
         TranscriptionStatus::Processing
         | TranscriptionStatus::Complete
-        | TranscriptionStatus::Unknown => 2,
+        | TranscriptionStatus::Unknown(_) => 2,
     }
 }
 

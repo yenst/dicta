@@ -38,8 +38,11 @@ Button {
 
         ThemeIcon {
             visible: root.iconName.length > 0
-            Layout.preferredWidth: root.dictaTheme.baseFontSize + 4
-            Layout.preferredHeight: root.dictaTheme.baseFontSize + 4
+            Layout.alignment: Qt.AlignVCenter
+            Layout.preferredWidth: iconSize
+            Layout.preferredHeight: iconSize
+            Layout.maximumWidth: iconSize
+            Layout.maximumHeight: iconSize
             iconName: root.iconName
             iconColor: !root.enabled ? root.dictaTheme.darkForeground
                 : root.destructive ? root.dictaTheme.red

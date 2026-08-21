@@ -11,6 +11,7 @@ use dicta_transcribe::{
     TranscriptionRequest, TranscriptionWorker, VoxtypeBackendFactory, WorkerConfig,
 };
 use std::{
+    fs,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -18,7 +19,7 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 #[derive(Clone, Debug)]
@@ -65,6 +66,15 @@ pub struct LinuxTranscriptionPort {
     installer: ModelInstaller,
     install_task: Option<ModelInstallTask>,
     last_install_error: Option<String>,
+    worker_fingerprint: WorkerFingerprint,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkerFingerprint {
+    enabled: bool,
+    backend_available: bool,
+    model_kind: Option<dicta_transcribe::ModelKind>,
+    model_identity: Option<(PathBuf, u64, Option<SystemTime>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +108,7 @@ impl LinuxTranscriptionPort {
             Arc::clone(&executor),
         );
         let state = build_transcription_state(&config, &executor, &installer)?;
+        let worker_fingerprint = worker_fingerprint(&config, &executor, &installer);
         Ok(Self {
             state,
             config,
@@ -105,6 +116,7 @@ impl LinuxTranscriptionPort {
             installer,
             install_task: None,
             last_install_error: None,
+            worker_fingerprint,
         })
     }
 
@@ -190,9 +202,14 @@ impl LinuxTranscriptionPort {
         if !can_replace {
             return;
         }
+        let fingerprint = worker_fingerprint(&self.config, &self.executor, &self.installer);
+        if fingerprint == self.worker_fingerprint {
+            return;
+        }
         if let Ok(state) = build_transcription_state(&self.config, &self.executor, &self.installer)
         {
             self.state = state;
+            self.worker_fingerprint = fingerprint;
         }
     }
 
@@ -207,6 +224,25 @@ impl LinuxTranscriptionPort {
             TranscriptionState::Disabled(port) => Some(port.reason()),
             TranscriptionState::Local { .. } => None,
         }
+    }
+}
+
+fn worker_fingerprint(
+    config: &LinuxTranscriptionConfig,
+    executor: &Arc<dyn ProcessExecutor>,
+    installer: &ModelInstaller,
+) -> WorkerFingerprint {
+    let factory = VoxtypeBackendFactory::new(config.backend.clone(), Arc::clone(executor));
+    let model = installer.trusted_provider().available_model(&config.model);
+    let model_identity = model.as_ref().and_then(|model| {
+        let metadata = fs::metadata(&model.path).ok()?;
+        Some((model.path.clone(), metadata.len(), metadata.modified().ok()))
+    });
+    WorkerFingerprint {
+        enabled: config.enabled,
+        backend_available: factory.is_available(),
+        model_kind: model.as_ref().map(|model| model.kind),
+        model_identity,
     }
 }
 

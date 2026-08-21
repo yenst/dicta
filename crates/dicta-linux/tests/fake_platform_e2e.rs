@@ -430,6 +430,7 @@ fn write_catalog_fixture(root: &std::path::Path, id: &str) -> RecordingFile {
         name: "Demo".to_owned(),
         created_at: std::time::UNIX_EPOCH.into(),
         source_path: None,
+        extra: serde_json::Map::new(),
     };
     write_json_atomic(&project_dir.join("project.json"), &project).unwrap();
     let recording = catalog_recording(root, id);
@@ -624,6 +625,7 @@ fn linked_branch_catalog_drives_transcription_persistence_at_the_resolved_path()
         name: "Demo".to_owned(),
         created_at: std::time::UNIX_EPOCH.into(),
         source_path: Some(repository.to_string_lossy().into_owned()),
+        extra: serde_json::Map::new(),
     };
     write_json_atomic(&registration, &project).unwrap();
     let recording_id = RecordingId::new("20260820-21-00-00").unwrap();

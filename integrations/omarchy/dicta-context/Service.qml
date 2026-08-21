@@ -23,7 +23,6 @@ Item {
   property string copyError: ""
   property string projectError: ""
   property string recordError: ""
-  property string statusOutput: ""
   property string pendingProjectId: ""
   property string pendingContextId: ""
   property string copiedContextId: ""
@@ -38,38 +37,48 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
-  function checkDictaRunning() {
-    if (dictaStatusProcess.running) return
-    statusOutput = ""
-    dictaStatusProcess.command = [dictaCommand, "--no-start", "--json", "status"]
-    dictaStatusProcess.running = true
+  function startEventStream() {
+    if (eventsProcess.running) return
+    eventsProcess.command = [dictaCommand, "--no-start", "--json", "events", "--follow"]
+    eventsProcess.running = true
   }
 
-  function finishDictaStatus(exitCode) {
-    var wasRunning = dictaRunning
-    var wasRecording = recordingActive
-    dictaRunning = Number(exitCode) === 0
-    recordingActive = false
-    if (dictaRunning) {
-      try {
-        var payload = JSON.parse(statusOutput || "{}")
-        var data = payload && payload.data ? payload.data : ({})
-        var phase = String(data.phase || "")
+  function handleEventLine(line) {
+    var text = String(line || "").trim()
+    if (text === "") return
+    try {
+      var payload = JSON.parse(text)
+      var eventName = String(payload.event || "")
+      var data = payload.data || ({})
+      var wasRunning = dictaRunning
+      var wasRecording = recordingActive
+      dictaRunning = true
+      if (eventName === "state_changed") {
+        var status = data.status || ({})
+        var phase = String(status.phase || "")
         recordingActive = phase === "recording" || phase === "annotating"
-      } catch (parseError) {
-        dictaRunning = false
+      } else if (eventName === "recording_started") {
+        recordingActive = true
+      } else if (eventName === "recording_stopped") {
+        recordingActive = false
       }
+      if (!stateProcess.running && !recordingsProcess.running
+          && (refreshQueued || !wasRunning || wasRecording !== recordingActive
+              || eventName === "transcription_completed")) {
+        refreshQueued = false
+        Qt.callLater(function() { root.refresh(root.selectedProjectId) })
+      }
+    } catch (parseError) {
     }
-    if (dictaRunning && !stateProcess.running && !recordingsProcess.running
-        && (refreshQueued || !wasRunning || wasRecording !== recordingActive)) {
-      refreshQueued = false
-      Qt.callLater(function() { root.refresh(root.selectedProjectId) })
-    }
-    if (!dictaRunning) {
-      loading = false
-      projects = []
-      contexts = []
-    }
+  }
+
+  function finishEventStream() {
+    dictaRunning = false
+    recordingActive = false
+    loading = false
+    projects = []
+    contexts = []
+    reconnectTimer.restart()
   }
 
   function refresh(projectId) {
@@ -77,7 +86,7 @@ Item {
       requestedProjectId = String(projectId)
     if (!dictaRunning) {
       refreshQueued = true
-      checkDictaRunning()
+      startEventStream()
       loading = false
       return
     }
@@ -352,24 +361,25 @@ Item {
   }
 
   Process {
-    id: dictaStatusProcess
+    id: eventsProcess
     running: false
-    onExited: function(exitCode) {
-      Qt.callLater(function() { root.finishDictaStatus(exitCode) })
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.handleEventLine(line) }
     }
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.statusOutput = text
+    onExited: function() {
+      Qt.callLater(function() { root.finishEventStream() })
     }
   }
 
   Timer {
+    id: reconnectTimer
     interval: 1000
-    running: true
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: root.checkDictaRunning()
+    repeat: false
+    onTriggered: root.startEventStream()
   }
+
+  Component.onCompleted: root.startEventStream()
 
   Timer {
     interval: root.refreshInterval

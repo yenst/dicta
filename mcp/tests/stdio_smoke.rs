@@ -54,6 +54,7 @@ fn packaged_binary_preserves_stdio_protocol_and_lists_native_tools() {
         name: "Demo".to_owned(),
         created_at: std::time::UNIX_EPOCH.into(),
         source_path: Some(repo.to_string_lossy().into_owned()),
+        extra: serde_json::Map::new(),
     };
     dicta_core::storage::write_json_atomic(&storage_root.join("demo/project.json"), &project)
         .unwrap();

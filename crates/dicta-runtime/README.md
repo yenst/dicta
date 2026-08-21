@@ -37,8 +37,9 @@ Native hosts may also observe newly emitted events without receiving history
 replays.
 
 Accepted connections use resumable nonblocking frame polling, so a silent or
-slow partial-frame client cannot hold shutdown open. Current limitations: one
-client is active at a time, and an in-flight domain command or event observer
-must return before shutdown completes. The metadata-check/unlink operation also
-has the small pathname race inherent to the standard-library Unix socket API;
+slow partial-frame client cannot hold shutdown open. Up to eight clients may be
+live at once so an `events --follow` subscriber can stay connected while other
+CLI commands run. An in-flight domain command or event observer must still
+return before shutdown completes. The metadata-check/unlink operation also has
+the small pathname race inherent to the standard-library Unix socket API;
 platform-specific unsafe syscalls are deliberately excluded.

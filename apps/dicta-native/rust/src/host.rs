@@ -5,8 +5,8 @@ use dicta_capture::{
 };
 use dicta_control::{
     protocol::StatusSnapshot, socket::LocalClient, AnnotationTool, CleanupSummary, Command, Event,
-    ModelStatusSummary, ProjectSummary, RecordingSelector, RecordingSummary, Response,
-    VoiceNoteStatus,
+    ModelStatusSummary, ProjectSummary, RecordingDocument, RecordingSelector, RecordingSummary,
+    Response, SettingsDocument, TimelineNoteDocument, VoiceNoteStatus,
 };
 use dicta_core::{
     storage::{annotation_sidecar_path, write_json_atomic, AppSettings},
@@ -44,6 +44,23 @@ pub const OVERLAY_CLEAR: u32 = 6;
 pub const OVERLAY_FINISH: u32 = 7;
 pub const UI_SHOW_REQUESTED: u32 = 8;
 pub const UI_OPEN_RECORDING_REQUESTED: u32 = 9;
+
+pub const ANNOTATION_ENABLE: u32 = 1;
+pub const ANNOTATION_DISABLE: u32 = 2;
+pub const ANNOTATION_SET_TOOL: u32 = 3;
+pub const ANNOTATION_UNDO: u32 = 4;
+pub const ANNOTATION_CLEAR: u32 = 5;
+
+pub const TOOL_PEN: u32 = 0;
+pub const TOOL_ARROW: u32 = 1;
+pub const TOOL_RECTANGLE: u32 = 2;
+pub const TOOL_SPOTLIGHT: u32 = 3;
+
+pub const SETTINGS_SHORTCUT: u32 = 1;
+pub const SETTINGS_CLEANUP: u32 = 2;
+pub const SETTINGS_BRANCH_LOCKING: u32 = 3;
+pub const SETTINGS_LANGUAGE: u32 = 4;
+pub const SETTINGS_GENERAL_PATH: u32 = 5;
 
 #[derive(Clone, Copy)]
 pub struct OverlayCallback {
@@ -447,7 +464,7 @@ pub struct UiSnapshot {
     pub projects: Vec<ProjectSummary>,
     pub model: Option<ModelStatusSummary>,
     pub model_error: Option<String>,
-    pub settings: AppSettings,
+    pub settings: SettingsDocument,
     pub recordings: Vec<RecordingSummary>,
 }
 
@@ -466,36 +483,36 @@ pub fn stop_recording() -> Result<(), String> {
 
 pub fn annotation_command(action: u32, tool: u32) -> Result<(), String> {
     let command = match action {
-        1 => Command::AnnotationEnable,
-        2 => Command::AnnotationDisable,
-        3 => Command::AnnotationTool {
+        ANNOTATION_ENABLE => Command::AnnotationEnable,
+        ANNOTATION_DISABLE => Command::AnnotationDisable,
+        ANNOTATION_SET_TOOL => Command::AnnotationTool {
             tool: match tool {
-                0 => AnnotationTool::Pen,
-                1 => AnnotationTool::Arrow,
-                2 => AnnotationTool::Rectangle,
-                3 => AnnotationTool::Spotlight,
+                TOOL_PEN => AnnotationTool::Pen,
+                TOOL_ARROW => AnnotationTool::Arrow,
+                TOOL_RECTANGLE => AnnotationTool::Rectangle,
+                TOOL_SPOTLIGHT => AnnotationTool::Spotlight,
                 _ => return Err("annotation tool is invalid".to_owned()),
             },
         },
-        4 => Command::AnnotationUndo,
-        5 => Command::AnnotationClear,
+        ANNOTATION_UNDO => Command::AnnotationUndo,
+        ANNOTATION_CLEAR => Command::AnnotationClear,
         _ => return Err("annotation action is invalid".to_owned()),
     };
     let response = control_request(command)?;
     expect_accepted(&response)
 }
 
-pub fn settings_command(key: u32, value: String) -> Result<AppSettings, String> {
+pub fn settings_command(key: u32, value: String) -> Result<SettingsDocument, String> {
     let command = match key {
-        1 => Command::SettingsSetShortcut { shortcut_id: value },
-        2 => Command::SettingsSetCleanup {
+        SETTINGS_SHORTCUT => Command::SettingsSetShortcut { shortcut_id: value },
+        SETTINGS_CLEANUP => Command::SettingsSetCleanup {
             enabled: parse_setting_bool("cleanup", &value)?,
         },
-        3 => Command::SettingsSetBranchLocking {
+        SETTINGS_BRANCH_LOCKING => Command::SettingsSetBranchLocking {
             enabled: parse_setting_bool("branch locking", &value)?,
         },
-        4 => Command::SettingsSetLanguage { language: value },
-        5 => Command::SettingsSetGeneralPath {
+        SETTINGS_LANGUAGE => Command::SettingsSetLanguage { language: value },
+        SETTINGS_GENERAL_PATH => Command::SettingsSetGeneralPath {
             path: (!value.trim().is_empty()).then_some(value),
         },
         _ => return Err("settings key is invalid".to_owned()),
@@ -510,7 +527,7 @@ pub fn settings_command(key: u32, value: String) -> Result<AppSettings, String> 
 
 pub fn cleanup_merged(project_id: String) -> Result<CleanupSummary, String> {
     match control_request(Command::SettingsCleanupMerged {
-        project: Some(project_id),
+        project: (!project_id.is_empty()).then_some(project_id),
     })? {
         Response::Cleanup(summary) => Ok(summary),
         response => Err(format!(
@@ -538,7 +555,7 @@ fn parse_setting_bool(label: &str, value: &str) -> Result<bool, String> {
     }
 }
 
-pub fn recording_detail(recording_id: String) -> Result<RecordingFile, String> {
+pub fn recording_detail(recording_id: String) -> Result<RecordingDocument, String> {
     match control_request(Command::RecordingShow {
         recording: RecordingSelector::Id(recording_id),
     })? {
@@ -565,8 +582,8 @@ pub fn transcribe_recording(recording_id: String) -> Result<(), String> {
 
 pub fn set_timeline_notes(
     recording_id: String,
-    notes: Vec<TimelineNote>,
-) -> Result<RecordingFile, String> {
+    notes: Vec<TimelineNoteDocument>,
+) -> Result<RecordingDocument, String> {
     match control_request(Command::RecordingSetTimelineNotes {
         recording: RecordingSelector::Id(recording_id),
         notes,
@@ -1065,6 +1082,7 @@ impl E2eStorage {
             name: "E2E Project".to_owned(),
             created_at: std::time::UNIX_EPOCH.into(),
             source_path: Some(self.root.to_string_lossy().into_owned()),
+            extra: serde_json::Map::new(),
         });
         self
     }
@@ -1197,7 +1215,7 @@ impl StoragePort for E2eStorage {
             transcript: None,
             transcript_path: None,
             transcript_segments: Vec::new(),
-            transcription_status: TranscriptionStatus::Unknown,
+            transcription_status: TranscriptionStatus::Unknown(String::new()),
             transcription_error: None,
             transcription_language: None,
             poster_path: None,

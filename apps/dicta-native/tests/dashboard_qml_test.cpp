@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImage>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -580,6 +581,8 @@ private slots:
     void tabCyclesCustomColumnsWithoutEnteringNativeFocusChain();
     void projectKeyboardNavigationKeepsGeneralFirst();
     void settingsCloseWithEscapeAndLeftArrow();
+    void compactLayoutExposesProjectsAndSettings();
+    void settingsCategoryRailStacksWithoutOverlap();
     void settingsControlsUpdateTheTypedNativeBridge();
     void visualQaCapture();
 };
@@ -1214,6 +1217,93 @@ void DashboardQmlTest::settingsCloseWithEscapeAndLeftArrow()
     dashboard->setProperty("settingsOpen", true);
     QTest::keyClick(window, Qt::Key_Left);
     QTRY_VERIFY(!dashboard->property("settingsOpen").toBool());
+}
+
+void DashboardQmlTest::compactLayoutExposesProjectsAndSettings()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    QTRY_VERIFY(window->isVisible());
+    window->setWidth(800);
+    QTRY_VERIFY(!dashboard->property("railLayout").toBool());
+
+    QObject *projects = dashboard->findChild<QObject *>(
+        QStringLiteral("compactProjectsButton"));
+    QObject *settings = dashboard->findChild<QObject *>(
+        QStringLiteral("compactSettingsButton"));
+    QVERIFY(projects != nullptr);
+    QVERIFY(settings != nullptr);
+    QTRY_VERIFY(projects->property("visible").toBool());
+    QTRY_VERIFY(settings->property("visible").toBool());
+
+    dashboard->setProperty("compactProjectsOpen", true);
+    QObject *drawer = dashboard->findChild<QObject *>(
+        QStringLiteral("compactProjectDrawer"));
+    QVERIFY(drawer != nullptr);
+    QTRY_VERIFY(drawer->property("visible").toBool());
+
+    dashboard->setProperty("settingsOpen", true);
+    dashboard->setProperty("compactProjectsOpen", false);
+    QTRY_VERIFY(dashboard->property("settingsOpen").toBool());
+    QVERIFY(dashboard->findChild<QObject *>(
+        QStringLiteral("settingsAppearanceCard")) != nullptr);
+}
+
+void DashboardQmlTest::settingsCategoryRailStacksWithoutOverlap()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    window->setWidth(1400);
+    window->setHeight(900);
+    QTRY_VERIFY(window->isVisible());
+    dashboard->setProperty("settingsOpen", true);
+    QTRY_VERIFY(dashboard->property("settingsOpen").toBool());
+
+    auto *back = dashboard->findChild<QQuickItem *>(QStringLiteral("settingsBack"));
+    auto *appearance = dashboard->findChild<QQuickItem *>(
+        QStringLiteral("settings-section-appearance"));
+    auto *connections = dashboard->findChild<QQuickItem *>(
+        QStringLiteral("settings-section-connections"));
+    auto *shortcuts = dashboard->findChild<QQuickItem *>(
+        QStringLiteral("settings-section-shortcuts"));
+    auto *transcription = dashboard->findChild<QQuickItem *>(
+        QStringLiteral("settings-section-transcription"));
+    auto *storage = dashboard->findChild<QQuickItem *>(
+        QStringLiteral("settings-section-storage"));
+    auto *desktop = dashboard->findChild<QQuickItem *>(
+        QStringLiteral("appearance-system"));
+    QVERIFY(back != nullptr);
+    QVERIFY(appearance != nullptr);
+    QVERIFY(connections != nullptr);
+    QVERIFY(shortcuts != nullptr);
+    QVERIFY(transcription != nullptr);
+    QVERIFY(storage != nullptr);
+    QVERIFY(desktop != nullptr);
+    QTRY_VERIFY(appearance->height() > 20);
+    QVERIFY(appearance->height() < 80);
+    QVERIFY(appearance->width() > 120);
+    QVERIFY(appearance->y() >= back->y() + back->height() - 1);
+    QVERIFY(connections->y() >= appearance->y() + appearance->height() - 1);
+    QVERIFY(shortcuts->y() >= connections->y() + connections->height() - 1);
+    QVERIFY(transcription->y() >= shortcuts->y() + shortcuts->height() - 1);
+    QVERIFY(storage->y() >= transcription->y() + transcription->height() - 1);
+    QTRY_VERIFY(desktop->width() > 40);
+    QVERIFY(desktop->height() > 20);
+    QVERIFY(desktop->property("visible").toBool());
 }
 
 void DashboardQmlTest::settingsControlsUpdateTheTypedNativeBridge()

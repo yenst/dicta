@@ -5,8 +5,8 @@ use crate::{
     StoragePort, TranscriptionPort,
 };
 use dicta_control::{
-    socket::{validate_private_socket, ControlError, LocalServer, RequestPoll},
-    EventEnvelope,
+    socket::{validate_private_socket, ControlError, LocalServer, RequestPoll, ServerConnection},
+    Command, EventEnvelope,
 };
 use std::{
     error::Error,
@@ -27,6 +27,13 @@ use std::{
 
 pub const DEFAULT_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub const MAX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub const MAX_LIVE_CONNECTIONS: usize = 8;
+
+struct LiveConnection {
+    connection: ServerConnection,
+    requests_served: usize,
+    following: bool,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServiceConfig {
@@ -227,24 +234,106 @@ where
         F: FnMut(&EventEnvelope),
     {
         self.server.set_nonblocking(true)?;
+        let mut live = Vec::new();
         let mut report = RunReport {
             connections_served: 0,
             requests_served: 0,
         };
+        let limit = self.config.max_requests_per_connection.get();
         while !shutdown.is_requested() {
-            self.observe_background(&mut observer)?;
-            if let Some(connection) = self.server.try_accept()? {
-                let connection_report =
-                    self.serve_connection(connection, &mut observer, Some(shutdown))?;
-                report.connections_served = report.connections_served.saturating_add(1);
-                report.requests_served = report
-                    .requests_served
-                    .saturating_add(connection_report.requests_served);
-            } else {
+            let background = self.observe_background(&mut observer)?;
+            discard_failed_sends(&mut live, &background);
+            if live.len() < MAX_LIVE_CONNECTIONS {
+                if let Some(connection) = self.server.try_accept()? {
+                    live.push(LiveConnection {
+                        connection,
+                        requests_served: 0,
+                        following: false,
+                    });
+                    report.connections_served = report.connections_served.saturating_add(1);
+                }
+            }
+            if live.is_empty() {
+                thread::sleep(self.config.idle_poll_interval);
+                continue;
+            }
+            let progressed =
+                self.poll_live_connections(&mut live, &mut observer, &mut report, limit);
+            if !progressed {
                 thread::sleep(self.config.idle_poll_interval);
             }
         }
         Ok(report)
+    }
+
+    fn poll_live_connections<F>(
+        &mut self,
+        live: &mut Vec<LiveConnection>,
+        observer: &mut F,
+        report: &mut RunReport,
+        limit: usize,
+    ) -> bool
+    where
+        F: FnMut(&EventEnvelope),
+    {
+        let mut progressed = false;
+        let mut index = 0;
+        while index < live.len() {
+            if live[index].requests_served >= limit && !live[index].following {
+                live.remove(index);
+                continue;
+            }
+            match live[index].connection.poll_request() {
+                Ok(RequestPoll::Request(request)) => {
+                    progressed = true;
+                    let follow = matches!(request.command, Command::Events { follow: true, .. });
+                    let previous_sequence = self.runtime.snapshot().last_event_sequence;
+                    let output = self.runtime.handle(request);
+                    let mut fresh = Vec::new();
+                    let send = (|| {
+                        for event in &output.events {
+                            if crate::event_sequence(&event.event) > previous_sequence {
+                                observer(event);
+                                fresh.push(event.clone());
+                            }
+                            live[index].connection.send_event(event)?;
+                        }
+                        live[index].connection.send_response(&output.response)
+                    })();
+                    if send.is_err() {
+                        live.remove(index);
+                        continue;
+                    }
+                    live[index].requests_served = live[index].requests_served.saturating_add(1);
+                    live[index].following |= follow;
+                    report.requests_served = report.requests_served.saturating_add(1);
+                    let mut other = 0;
+                    while other < live.len() {
+                        if other == index {
+                            other += 1;
+                            continue;
+                        }
+                        let broadcast = fresh
+                            .iter()
+                            .try_for_each(|event| live[other].connection.send_event(event));
+                        if broadcast.is_err() {
+                            live.remove(other);
+                            if other < index {
+                                index -= 1;
+                            }
+                            continue;
+                        }
+                        other += 1;
+                    }
+                    index += 1;
+                }
+                Ok(RequestPoll::Pending) => index += 1,
+                Ok(RequestPoll::Closed) | Err(_) => {
+                    live.remove(index);
+                }
+            }
+        }
+        progressed
     }
 
     fn observe_background<F>(
@@ -325,6 +414,17 @@ where
     pub fn shutdown(self) {}
 }
 
+fn discard_failed_sends(live: &mut Vec<LiveConnection>, events: &[EventEnvelope]) {
+    if events.is_empty() {
+        return;
+    }
+    live.retain_mut(|connection| {
+        events
+            .iter()
+            .all(|event| connection.connection.send_event(event).is_ok())
+    });
+}
+
 fn validate_config(config: ServiceConfig) -> Result<(), ServiceError> {
     if config.idle_poll_interval.is_zero() {
         return Err(ServiceError::InvalidConfig(
@@ -383,7 +483,7 @@ mod tests {
     use dicta_capture::CaptureArtifact;
     use dicta_control::{
         socket::{LocalClient, LocalServer},
-        AnnotationTool, Command, Event, Response,
+        AnnotationTool, Command, Event, Response, ServerMessage,
     };
     use dicta_core::{AnnotationFile, RecordingFile, RecordingId};
     use dicta_engine::{RecordingSession, StateKind};
@@ -727,7 +827,8 @@ mod tests {
         assert_eq!(
             client
                 .request(Command::Events {
-                    since_sequence: None
+                    since_sequence: None,
+                    follow: false,
                 })
                 .unwrap(),
             Response::Accepted
@@ -739,6 +840,62 @@ mod tests {
         assert_eq!(report.connections_served, 1);
         assert_eq!(report.requests_served, 2);
         assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn event_followers_do_not_block_other_clients() {
+        let directory = test_directory("event-follow");
+        clean_directory(&directory);
+        let path = directory.join("control.sock");
+        let service =
+            LocalRuntimeService::bind(&path, runtime(), ServiceConfig::default()).unwrap();
+        let shutdown = ShutdownHandle::new();
+        let runner_shutdown = shutdown.clone();
+        let server_thread =
+            thread::spawn(move || service.run_until_shutdown(&runner_shutdown).unwrap());
+
+        let mut follower = LocalClient::connect(&path).unwrap();
+        follower
+            .send(Command::Events {
+                since_sequence: None,
+                follow: true,
+            })
+            .unwrap();
+        let (events_sender, events_receiver) = mpsc::channel();
+        let follower_thread = thread::spawn(move || loop {
+            match follower.read_message() {
+                Ok(ServerMessage::Event(event)) => {
+                    if matches!(event.event, Event::RecordingStarted { .. }) {
+                        let _ = events_sender.send(true);
+                        return;
+                    }
+                }
+                Ok(ServerMessage::Response(_)) => {}
+                Err(_) => {
+                    let _ = events_sender.send(false);
+                    return;
+                }
+            }
+        });
+
+        let mut commander = LocalClient::connect(&path).unwrap();
+        assert_eq!(
+            commander
+                .request(Command::RecordStart {
+                    project: None,
+                    note: None,
+                })
+                .unwrap(),
+            Response::Accepted
+        );
+        assert!(events_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap());
+        drop(commander);
+        shutdown.request();
+        server_thread.join().unwrap();
+        let _ = follower_thread.join();
         fs::remove_dir_all(directory).unwrap();
     }
 

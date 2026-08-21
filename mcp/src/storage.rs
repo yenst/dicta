@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use dicta_core::{RecordingId, TranscriptSegment};
+use dicta_core::{catalog, RecordingId, TranscriptSegment};
 use serde_json::Value;
 use std::{
     fs,
@@ -71,75 +71,12 @@ pub(crate) fn load_recordings(source: &RecordingSource) -> Result<LoadReport, St
     }
 
     let mut report = LoadReport::default();
-    let days = fs::read_dir(&recordings_root)
-        .map_err(|error| format!("Could not read recordings: {error}"))?;
-    for day in days {
-        let day = match day {
-            Ok(day) => day,
-            Err(error) => {
-                report.warnings.push(format!(
-                    "Could not inspect an entry in `{}`: {error}",
-                    recordings_root.display()
-                ));
-                continue;
-            }
-        };
-        let Ok(file_type) = day.file_type() else {
-            report
+    for path in catalog::walk_recording_metadata(&source.path, &mut report.warnings) {
+        match read_recording(path.clone(), &source.policy) {
+            Ok(recording) => report.recordings.push(recording),
+            Err(error) => report
                 .warnings
-                .push(format!("Could not inspect `{}`", day.path().display()));
-            continue;
-        };
-        if file_type.is_symlink() {
-            report.warnings.push(format!(
-                "Ignored symlinked recording day `{}`",
-                day.path().display()
-            ));
-            continue;
-        }
-        if !file_type.is_dir() {
-            continue;
-        }
-        let entries = match fs::read_dir(day.path()) {
-            Ok(entries) => entries,
-            Err(error) => {
-                report.warnings.push(format!(
-                    "Could not read recording day `{}`: {error}",
-                    day.path().display()
-                ));
-                continue;
-            }
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                report
-                    .warnings
-                    .push(format!("Could not inspect `{}`", path.display()));
-                continue;
-            };
-            if file_type.is_symlink() {
-                report
-                    .warnings
-                    .push(format!("Ignored symlinked artifact `{}`", path.display()));
-                continue;
-            }
-            let is_transcript_sidecar = entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.ends_with(".transcript.json"));
-            if !file_type.is_file()
-                || is_transcript_sidecar
-                || path.extension().and_then(|extension| extension.to_str()) != Some("json")
-            {
-                continue;
-            }
-            match read_recording(path.clone(), &source.policy) {
-                Ok(recording) => report.recordings.push(recording),
-                Err(error) => report
-                    .warnings
-                    .push(format!("Ignored `{}`: {error}", path.display())),
-            }
+                .push(format!("Ignored `{}`: {error}", path.display())),
         }
     }
     report

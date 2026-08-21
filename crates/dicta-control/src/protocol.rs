@@ -1,5 +1,7 @@
 use crate::{ErrorCode, ProtocolError};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::{fmt, num::NonZeroU64};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -146,6 +148,8 @@ pub enum Command {
     Events {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since_sequence: Option<u64>,
+        #[serde(default, skip_serializing_if = "skip_if_false")]
+        follow: bool,
     },
     ProjectList,
     ProjectAdd {
@@ -185,7 +189,7 @@ pub enum Command {
     },
     RecordingSetTimelineNotes {
         recording: RecordingSelector,
-        notes: Vec<dicta_core::TimelineNote>,
+        notes: Vec<TimelineNoteDocument>,
     },
     RecordingVoiceNoteTranscribe {
         recording: RecordingSelector,
@@ -250,7 +254,7 @@ pub enum ModelTier {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Response {
     Accepted,
-    Settings(dicta_core::storage::AppSettings),
+    Settings(SettingsDocument),
     Cleanup(CleanupSummary),
     ModelInstallStarted,
     Status(StatusSnapshot),
@@ -259,9 +263,134 @@ pub enum Response {
     Project(Option<ProjectSummary>),
     Recordings(Vec<RecordingSummary>),
     Recording(RecordingSummary),
-    RecordingDetails(Box<dicta_core::RecordingFile>),
+    RecordingDetails(Box<RecordingDocument>),
     VoiceNote(VoiceNoteStatus),
     Context { text: String },
+}
+
+/// Persistent settings as they appear on the local control wire.
+///
+/// The JSON names match `settings.json` so CLI, UI, and disk stay aligned
+/// without sharing the disk struct.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SettingsDocument {
+    #[serde(default = "default_shortcut_id")]
+    pub shortcut_id: String,
+    #[serde(default = "enabled_by_default")]
+    pub cleanup_merged_videos: bool,
+    #[serde(default = "enabled_by_default")]
+    pub branch_locking: bool,
+    #[serde(default = "default_transcription_language")]
+    pub transcription_language: String,
+    #[serde(default)]
+    pub general_path: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for SettingsDocument {
+    fn default() -> Self {
+        Self {
+            shortcut_id: default_shortcut_id(),
+            cleanup_merged_videos: true,
+            branch_locking: true,
+            transcription_language: default_transcription_language(),
+            general_path: None,
+            extra: Map::new(),
+        }
+    }
+}
+
+fn default_shortcut_id() -> String {
+    "alt_shift_r".to_owned()
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+fn default_transcription_language() -> String {
+    "auto".to_owned()
+}
+
+fn typed_note_source() -> String {
+    "typed".to_owned()
+}
+
+fn default_recording_scope() -> String {
+    "branch".to_owned()
+}
+
+const fn skip_if_false(value: &bool) -> bool {
+    !*value
+}
+
+/// One transcript segment on the wire. Disk models stay in `dicta-core`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TranscriptSegmentDocument {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+/// One timeline note on the wire. Disk models stay in `dicta-core`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct TimelineNoteDocument {
+    pub id: String,
+    pub timestamp_seconds: f64,
+    pub text: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default = "typed_note_source")]
+    pub source: String,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Recording metadata as it appears on the local control wire.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct RecordingDocument {
+    pub id: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub video_path: String,
+    #[serde(default)]
+    pub metadata_path: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default = "default_recording_scope")]
+    pub recording_scope: String,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub duration_seconds: Option<f64>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub success: bool,
+    #[serde(default)]
+    pub transcript: Option<String>,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
+    #[serde(default)]
+    pub transcript_segments: Vec<TranscriptSegmentDocument>,
+    #[serde(default)]
+    pub transcription_status: String,
+    #[serde(default)]
+    pub transcription_error: Option<String>,
+    #[serde(default)]
+    pub transcription_language: Option<String>,
+    #[serde(default)]
+    pub poster_path: Option<String>,
+    #[serde(default)]
+    pub annotation_path: Option<String>,
+    #[serde(default)]
+    pub timeline_notes: Vec<TimelineNoteDocument>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

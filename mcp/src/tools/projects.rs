@@ -109,6 +109,7 @@ mod tests {
                 name: "General".to_owned(),
                 created_at: std::time::UNIX_EPOCH.into(),
                 source_path: Some("/tmp/general".to_owned()),
+                extra: serde_json::Map::new(),
             },
             storage_path: "/tmp/general".into(),
         };

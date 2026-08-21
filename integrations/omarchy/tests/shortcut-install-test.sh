@@ -24,9 +24,10 @@ grep -Fxq 'o.bind("CTRL + SPACE", "Toggle Dicta recording", "dicta record toggle
   "$fixture/config/hypr/dicta-bindings.lua"
 grep -Fxq 'hl.unbind("SUPER + ALT + A")' "$fixture/config/hypr/dicta-bindings.lua"
 grep -Fxq 'hl.unbind("F8")' "$fixture/config/hypr/dicta-bindings.lua"
-grep -Fxq 'o.bind("F8", "Draw Dicta annotation (hold)", "dicta annotate enable")' \
+grep -Fxq 'hl.unbind("CTRL + SHIFT + D")' "$fixture/config/hypr/dicta-bindings.lua"
+grep -Fxq 'o.bind("CTRL + SHIFT + D", "Draw Dicta annotation (hold)", "dicta annotate enable")' \
   "$fixture/config/hypr/dicta-bindings.lua"
-grep -Fxq 'o.bind("F8", nil, "dicta annotate disable", { release = true })' \
+grep -Fxq 'o.bind("CTRL + SHIFT + D", nil, "dicta annotate disable", { release = true })' \
   "$fixture/config/hypr/dicta-bindings.lua"
 grep -Fq 'title = "^Dicta Annotation Overlay$"' "$fixture/config/hypr/dicta-bindings.lua"
 ! grep -Fq 'title = "^Dicta Annotation Helper$"' "$fixture/config/hypr/dicta-bindings.lua"

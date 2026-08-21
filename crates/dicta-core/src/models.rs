@@ -1,6 +1,6 @@
 use crate::{ProjectId, RecordingId};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::fmt;
 
@@ -16,6 +16,8 @@ pub struct ProjectFile {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub source_path: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -53,26 +55,30 @@ impl fmt::Display for RecordingScope {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TranscriptionStatus {
     Pending,
     Processing,
     Complete,
     Failed,
-    #[default]
-    #[serde(other)]
-    Unknown,
+    Unknown(String),
+}
+
+impl Default for TranscriptionStatus {
+    fn default() -> Self {
+        Self::Unknown(String::new())
+    }
 }
 
 impl TranscriptionStatus {
-    pub const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Pending => "pending",
             Self::Processing => "processing",
             Self::Complete => "complete",
             Self::Failed => "failed",
-            Self::Unknown => "",
+            Self::Unknown(token) => token,
         }
     }
 }
@@ -89,6 +95,22 @@ impl Serialize for TranscriptionStatus {
         S: Serializer,
     {
         serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TranscriptionStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "pending" => Self::Pending,
+            "processing" => Self::Processing,
+            "complete" => Self::Complete,
+            "failed" => Self::Failed,
+            other => Self::Unknown(other.to_owned()),
+        })
     }
 }
 
@@ -229,12 +251,15 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<TranscriptionStatus>("\"\"").unwrap(),
-            TranscriptionStatus::Unknown
+            TranscriptionStatus::Unknown(String::new())
         );
         assert_eq!(
-            serde_json::to_string(&TranscriptionStatus::Unknown).unwrap(),
+            serde_json::to_string(&TranscriptionStatus::Unknown(String::new())).unwrap(),
             "\"\""
         );
+        let queued: TranscriptionStatus = serde_json::from_str("\"queued\"").unwrap();
+        assert_eq!(queued, TranscriptionStatus::Unknown("queued".to_owned()));
+        assert_eq!(serde_json::to_string(&queued).unwrap(), "\"queued\"");
     }
 
     #[test]
@@ -242,6 +267,14 @@ mod tests {
         let project: ProjectFile = serde_json::from_str(r#"{"id":"demo","name":"Demo"}"#).unwrap();
         assert_eq!(project.id.as_str(), "demo");
         assert_eq!(project.created_at, unix_epoch());
+    }
+
+    #[test]
+    fn project_files_preserve_unknown_fields() {
+        let project: ProjectFile =
+            serde_json::from_str(r#"{"id":"demo","name":"Demo","color":"blue"}"#).unwrap();
+        assert_eq!(project.extra["color"], "blue");
+        assert_eq!(serde_json::to_value(project).unwrap()["color"], "blue");
     }
 
     #[test]
@@ -291,7 +324,10 @@ mod tests {
             serde_json::from_str(r#"{"id":"20260820-12-00-00","project_id":"dicta"}"#).unwrap();
         assert!(recording.is_valid());
         assert_eq!(recording.recording_scope, RecordingScope::Branch);
-        assert_eq!(recording.transcription_status, TranscriptionStatus::Unknown);
+        assert_eq!(
+            recording.transcription_status,
+            TranscriptionStatus::Unknown(String::new())
+        );
         assert!(recording.transcript_segments.is_empty());
     }
 }

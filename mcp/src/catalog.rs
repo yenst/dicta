@@ -1,4 +1,4 @@
-use dicta_core::{storage, ProjectFile, ProjectId, GENERAL_PROJECT_ID};
+use dicta_core::{catalog, storage, ProjectFile, ProjectId, GENERAL_PROJECT_ID};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -70,12 +70,7 @@ pub(crate) fn load_at(root: &Path) -> Result<Vec<CatalogProject>, String> {
 }
 
 fn general_only(root: &Path) -> Vec<CatalogProject> {
-    let settings_path = root.join("settings.json");
-    let settings = fs::symlink_metadata(&settings_path)
-        .ok()
-        .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-        .and_then(|_| storage::read_json::<storage::GeneralSettings>(&settings_path).ok())
-        .unwrap_or_default();
+    let settings = catalog::load_general_settings(root);
     let path = storage::general_storage_path(root, settings.general_path.as_deref());
     vec![CatalogProject {
         project: ProjectFile {
@@ -84,6 +79,7 @@ fn general_only(root: &Path) -> Vec<CatalogProject> {
             name: "General".to_owned(),
             created_at: std::time::UNIX_EPOCH.into(),
             source_path: Some(path.to_string_lossy().into_owned()),
+            extra: serde_json::Map::new(),
         },
         storage_path: path,
     }]
@@ -157,6 +153,7 @@ mod tests {
             name: name.to_owned(),
             created_at: std::time::UNIX_EPOCH.into(),
             source_path,
+            extra: serde_json::Map::new(),
         }
     }
 

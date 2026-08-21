@@ -165,16 +165,8 @@ pub(crate) fn find(context: &Context, recording_id: &str) -> Result<FoundRecordi
             scope_label,
         });
     }
-    let storage_root = dicta_root()?;
-    if let Some(recording) = find_general_recording(&storage_root, recording_id)? {
-        return Ok(FoundRecording {
-            recording,
-            project_name: "General".to_string(),
-            scope_label: "General".to_string(),
-        });
-    }
     Err(format!(
-        "Recording `{recording_id}` was not found for repository branch `{}` or in General",
+        "Recording `{recording_id}` was not found for repository branch `{}`",
         context.branch
     ))
 }
@@ -188,16 +180,9 @@ pub(crate) fn dicta_root() -> Result<PathBuf, String> {
     Ok(dicta_core::storage::preferred_storage_root(&documents))
 }
 
+#[cfg(test)]
 fn general_sources(storage_root: &Path) -> Vec<RecordingSource> {
-    let settings_path = storage_root.join("settings.json");
-    let settings = fs::symlink_metadata(&settings_path)
-        .ok()
-        .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-        .and_then(|_| fs::read_to_string(settings_path).ok())
-        .and_then(|content| {
-            serde_json::from_str::<dicta_core::storage::GeneralSettings>(&content).ok()
-        })
-        .unwrap_or_default();
+    let settings = dicta_core::catalog::load_general_settings(storage_root);
     let legacy_unprojected = storage_root.join("unprojected");
     dicta_core::storage::general_storage_candidates(storage_root, settings.general_path.as_deref())
         .into_iter()
@@ -210,22 +195,6 @@ fn general_sources(storage_root: &Path) -> Vec<RecordingSource> {
             RecordingSource { path, policy }
         })
         .collect()
-}
-
-fn find_general_recording(
-    storage_root: &Path,
-    recording_id: &str,
-) -> Result<Option<Recording>, String> {
-    for source in general_sources(storage_root) {
-        if let Some(recording) = storage::load_recordings(&source)?
-            .recordings
-            .into_iter()
-            .find(|recording| recording.id.as_str() == recording_id)
-        {
-            return Ok(Some(recording));
-        }
-    }
-    Ok(None)
 }
 
 fn find_project(storage_root: &Path, repo_root: &Path) -> Result<ProjectFile, String> {

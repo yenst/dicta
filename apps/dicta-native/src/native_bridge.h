@@ -39,7 +39,6 @@ public:
     ~NativeBridge() override;
 
     [[nodiscard]] QString apiVersion() const;
-    Q_INVOKABLE [[nodiscard]] QString inspect(const QString &text) const;
     [[nodiscard]] QString hostState() const;
     [[nodiscard]] QString hostError() const;
     [[nodiscard]] QString socketPath() const;

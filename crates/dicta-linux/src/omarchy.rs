@@ -91,8 +91,9 @@ fn managed_binding(shortcut_id: &str) -> Result<String, PortError> {
          o.bind(\"{sequence}\", \"Toggle Dicta recording\", \"dicta record toggle\")\n\
          hl.unbind(\"SUPER + ALT + A\")\n\
          hl.unbind(\"F8\")\n\
-         o.bind(\"F8\", \"Draw Dicta annotation (hold)\", \"dicta annotate enable\")\n\
-         o.bind(\"F8\", nil, \"dicta annotate disable\", {{ release = true }})\n\
+         hl.unbind(\"CTRL + SHIFT + D\")\n\
+         o.bind(\"CTRL + SHIFT + D\", \"Draw Dicta annotation (hold)\", \"dicta annotate enable\")\n\
+         o.bind(\"CTRL + SHIFT + D\", nil, \"dicta annotate disable\", {{ release = true }})\n\
          o.window({{ class = \"^dicta-native$\", title = \"^Dicta Annotation Overlay$\" }}, {{\n\
            tag = \"-default-opacity\",\n\
            float = true,\n\
@@ -217,6 +218,8 @@ mod tests {
         assert!(control_space.contains("\"dicta record toggle\""));
         assert!(control_space.contains("hl.unbind(\"SUPER + ALT + A\")"));
         assert!(control_space.contains("hl.unbind(\"F8\")"));
+        assert!(control_space.contains("hl.unbind(\"CTRL + SHIFT + D\")"));
+        assert!(control_space.contains("\"CTRL + SHIFT + D\""));
         assert!(control_space.contains("\"dicta annotate enable\""));
         assert!(control_space.contains("\"dicta annotate disable\""));
         assert!(control_space.contains("release = true"));

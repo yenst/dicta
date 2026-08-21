@@ -1,20 +1,18 @@
 use crate::{ClientFailure, FailureKind};
 use dicta_control::{
-    protocol::{RecordingSummary, Response, TranscriptionState},
+    protocol::{RecordingDocument, RecordingSummary, Response, TranscriptionState},
     Command, RecordingSelector,
 };
-use dicta_core::{storage, ProjectFile, RecordingFile, TranscriptionStatus, GENERAL_PROJECT_ID};
+use dicta_core::{catalog, storage, RecordingFile, TranscriptionStatus};
 use std::{
-    collections::HashSet,
-    env, fs,
+    collections::HashMap,
+    env,
     path::{Path, PathBuf},
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum OfflinePayload {
     Response(Response),
-    Recording(Box<RecordingFile>),
-    Context(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,36 +62,35 @@ impl FileOfflineStore {
 
     fn load(&self, project_filter: Option<&str>) -> Result<LoadReport, ClientFailure> {
         let root = self.root()?;
-        let mut sources = registered_sources(root);
-        sources.extend(repository_local_source(&self.working_directory));
-        sources.extend(general_sources(root));
+        let mut sources = catalog::registered_sources(root);
+        sources.extend(catalog::repository_local_sources(&self.working_directory));
+        sources.extend(catalog::general_sources(root));
         if let Some(filter) = project_filter {
             sources.retain(|source| {
-                source.project_id == filter || source.project_name.eq_ignore_ascii_case(filter)
+                source.project_id.as_str() == filter
+                    || source.project_name.eq_ignore_ascii_case(filter)
             });
         }
-        deduplicate_sources(&mut sources);
-
-        let mut report = LoadReport::default();
-        for source in sources {
-            load_source(&source, &mut report);
-        }
-        report.recordings.sort_by(|left, right| {
-            right
-                .recording
-                .started_at
-                .cmp(&left.recording.started_at)
-                .then_with(|| right.recording.id.as_str().cmp(left.recording.id.as_str()))
-        });
-        let mut seen = HashSet::new();
-        report.recordings.retain(|item| {
-            seen.insert((
-                item.recording.project_id.clone(),
-                item.recording.id.clone(),
-                item.recording.metadata_path.clone(),
-            ))
-        });
-        Ok(report)
+        catalog::deduplicate_sources(&mut sources);
+        let names = sources
+            .iter()
+            .map(|source| (source.project_id.clone(), source.project_name.clone()))
+            .collect::<HashMap<_, _>>();
+        let loaded = catalog::load_recordings(&sources);
+        Ok(LoadReport {
+            recordings: loaded
+                .recordings
+                .into_iter()
+                .map(|recording| LoadedRecording {
+                    project_name: names
+                        .get(&recording.project_id)
+                        .cloned()
+                        .unwrap_or_else(|| recording.project_id.to_string()),
+                    recording,
+                })
+                .collect(),
+            warnings: loaded.warnings,
+        })
     }
 }
 
@@ -126,7 +123,9 @@ impl OfflineStore for FileOfflineStore {
                 let mut report = self.load(None)?;
                 let selected = select(&report.recordings, recording)?;
                 Ok(Some(OfflineRead {
-                    payload: OfflinePayload::Recording(Box::new(selected.recording.clone())),
+                    payload: OfflinePayload::Response(Response::RecordingDetails(Box::new(
+                        recording_document(&selected.recording)?,
+                    ))),
                     warnings: std::mem::take(&mut report.warnings),
                 }))
             }
@@ -136,21 +135,15 @@ impl OfflineStore for FileOfflineStore {
                 let mut report = self.load(project.as_deref())?;
                 let selected = select(&report.recordings, recording)?;
                 Ok(Some(OfflineRead {
-                    payload: OfflinePayload::Context(render_context(selected)),
+                    payload: OfflinePayload::Response(Response::Context {
+                        text: render_context(selected),
+                    }),
                     warnings: std::mem::take(&mut report.warnings),
                 }))
             }
             _ => Ok(None),
         }
     }
-}
-
-#[derive(Clone, Debug)]
-struct Source {
-    path: PathBuf,
-    project_id: String,
-    project_name: String,
-    include_branches: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -163,249 +156,6 @@ struct LoadedRecording {
 struct LoadReport {
     recordings: Vec<LoadedRecording>,
     warnings: Vec<String>,
-}
-
-fn registered_sources(root: &Path) -> Vec<Source> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if !file_type.is_dir() || file_type.is_symlink() {
-                return None;
-            }
-            let metadata_path = entry.path().join("project.json");
-            if is_symlink(&metadata_path) {
-                return None;
-            }
-            let project = storage::read_json::<ProjectFile>(&metadata_path).ok()?;
-            let path = project
-                .source_path
-                .as_deref()
-                .map(|source| PathBuf::from(source).join(".dicta"))
-                .unwrap_or_else(|| entry.path());
-            Some(Source {
-                path,
-                project_id: project.id.to_string(),
-                project_name: project.name,
-                include_branches: project.source_path.is_some(),
-            })
-        })
-        .collect()
-}
-
-fn repository_local_source(working_directory: &Path) -> Vec<Source> {
-    let Ok(repo_root) = dicta_core::git::root(working_directory) else {
-        return Vec::new();
-    };
-    let storage_path = repo_root.join(".dicta");
-    let project_path = storage_path.join("project.json");
-    if is_symlink(&storage_path) || is_symlink(&project_path) {
-        return Vec::new();
-    }
-    let Ok(project) = storage::read_json::<ProjectFile>(&project_path) else {
-        return Vec::new();
-    };
-    vec![Source {
-        path: storage_path,
-        project_id: project.id.to_string(),
-        project_name: project.name,
-        include_branches: true,
-    }]
-}
-
-fn general_sources(root: &Path) -> Vec<Source> {
-    let settings = storage::read_json::<storage::GeneralSettings>(&root.join("settings.json"))
-        .unwrap_or_default();
-    storage::general_storage_candidates(root, settings.general_path.as_deref())
-        .into_iter()
-        .map(|path| Source {
-            path,
-            project_id: GENERAL_PROJECT_ID.to_string(),
-            project_name: "General".to_string(),
-            include_branches: false,
-        })
-        .collect()
-}
-
-fn deduplicate_sources(sources: &mut Vec<Source>) {
-    let mut seen = HashSet::new();
-    sources.retain(|source| {
-        let key = source
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| source.path.clone());
-        seen.insert((key, source.project_id.clone()))
-    });
-}
-
-fn load_source(source: &Source, report: &mut LoadReport) {
-    load_recording_tree(source, &source.path, report);
-    if !source.include_branches {
-        return;
-    }
-    let branches = source.path.join("branches");
-    let Ok(entries) = fs::read_dir(&branches) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_dir() && !kind.is_symlink() {
-            load_recording_tree(source, &entry.path(), report);
-        } else if kind.is_symlink() {
-            report.warnings.push(format!(
-                "ignored symlinked branch storage `{}`",
-                entry.path().display()
-            ));
-        }
-    }
-}
-
-fn load_recording_tree(source: &Source, tree: &Path, report: &mut LoadReport) {
-    if is_symlink(tree) {
-        report
-            .warnings
-            .push(format!("ignored symlinked storage `{}`", tree.display()));
-        return;
-    }
-    let recordings_root = tree.join("recordings");
-    if is_symlink(&recordings_root) {
-        report.warnings.push(format!(
-            "ignored symlinked recordings storage `{}`",
-            recordings_root.display()
-        ));
-        return;
-    }
-    let Ok(days) = fs::read_dir(&recordings_root) else {
-        return;
-    };
-    for day in days.flatten() {
-        let Ok(kind) = day.file_type() else {
-            continue;
-        };
-        if kind.is_symlink() {
-            report.warnings.push(format!(
-                "ignored symlinked recording day `{}`",
-                day.path().display()
-            ));
-            continue;
-        }
-        if !kind.is_dir() {
-            continue;
-        }
-        let Ok(entries) = fs::read_dir(day.path()) else {
-            report
-                .warnings
-                .push(format!("could not read `{}`", day.path().display()));
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_transcript = entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.ends_with(".transcript.json"));
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_file()
-                && !kind.is_symlink()
-                && !is_transcript
-                && path.extension().and_then(|value| value.to_str()) == Some("json")
-            {
-                match read_recording(&path, &recordings_root, source) {
-                    Ok(recording) => report.recordings.push(recording),
-                    Err(error) => report
-                        .warnings
-                        .push(format!("ignored `{}`: {error}", path.display())),
-                }
-            } else if kind.is_symlink() {
-                report
-                    .warnings
-                    .push(format!("ignored symlinked artifact `{}`", path.display()));
-            }
-        }
-    }
-}
-
-fn read_recording(
-    path: &Path,
-    recordings_root: &Path,
-    source: &Source,
-) -> Result<LoadedRecording, String> {
-    let mut recording = storage::read_json::<RecordingFile>(path)?;
-    if !recording.is_valid() {
-        return Err("recording metadata failed validation".to_string());
-    }
-    if recording.project_id.as_str() != source.project_id {
-        return Err(format!(
-            "recording belongs to project `{}` instead of `{}`",
-            recording.project_id, source.project_id
-        ));
-    }
-    let canonical_path = path
-        .canonicalize()
-        .map_err(|error| format!("could not resolve metadata: {error}"))?;
-    let canonical_root = recordings_root
-        .canonicalize()
-        .map_err(|error| format!("could not resolve recordings root: {error}"))?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err("metadata escaped the recordings root".to_string());
-    }
-    recording.metadata_path = canonical_path.to_string_lossy().into_owned();
-    if recording.transcript.is_none() {
-        if let Some((path, transcript)) =
-            read_transcript(&recording, &canonical_path, &canonical_root)
-        {
-            recording.transcript_path = Some(path.to_string_lossy().into_owned());
-            recording.transcript = Some(transcript);
-        }
-    }
-    Ok(LoadedRecording {
-        recording,
-        project_name: source.project_name.clone(),
-    })
-}
-
-fn read_transcript(
-    recording: &RecordingFile,
-    metadata_path: &Path,
-    recordings_root: &Path,
-) -> Option<(PathBuf, String)> {
-    let mut candidates = Vec::new();
-    if let Some(raw) = recording.transcript_path.as_deref() {
-        let path = PathBuf::from(raw);
-        candidates.push(if path.is_absolute() {
-            path
-        } else {
-            metadata_path.parent()?.join(path)
-        });
-    }
-    let stem = metadata_path.file_stem()?.to_str()?;
-    candidates.push(metadata_path.with_file_name(format!("{stem}.transcript.md")));
-    candidates.push(metadata_path.with_file_name(format!("{stem}.md")));
-    for candidate in candidates {
-        let Ok(metadata) = fs::symlink_metadata(&candidate) else {
-            continue;
-        };
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-            continue;
-        }
-        let Ok(canonical) = candidate.canonicalize() else {
-            continue;
-        };
-        if !canonical.starts_with(recordings_root) {
-            continue;
-        }
-        if let Ok(content) = fs::read_to_string(&canonical) {
-            return Some((canonical, content));
-        }
-    }
-    None
 }
 
 fn select<'a>(
@@ -443,6 +193,21 @@ fn select<'a>(
     })
 }
 
+fn recording_document(recording: &RecordingFile) -> Result<RecordingDocument, ClientFailure> {
+    let value = serde_json::to_value(recording).map_err(|error| {
+        ClientFailure::new(
+            FailureKind::Software,
+            format!("could not encode offline recording details: {error}"),
+        )
+    })?;
+    serde_json::from_value(value).map_err(|error| {
+        ClientFailure::new(
+            FailureKind::Software,
+            format!("offline recording details did not match the control document: {error}"),
+        )
+    })
+}
+
 fn summary(item: &LoadedRecording) -> RecordingSummary {
     RecordingSummary {
         id: item.recording.id.to_string(),
@@ -467,7 +232,7 @@ fn summary(item: &LoadedRecording) -> RecordingSummary {
             TranscriptionStatus::Processing => TranscriptionState::Processing,
             TranscriptionStatus::Complete => TranscriptionState::Complete,
             TranscriptionStatus::Failed => TranscriptionState::Failed,
-            TranscriptionStatus::Unknown => TranscriptionState::Unavailable,
+            TranscriptionStatus::Unknown(_) => TranscriptionState::Unavailable,
         },
     }
 }
@@ -524,8 +289,4 @@ fn render_context(item: &LoadedRecording) -> String {
         output.push_str("\nTranscript unavailable.\n");
     }
     output
-}
-
-fn is_symlink(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
 }

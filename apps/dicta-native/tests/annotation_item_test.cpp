@@ -286,7 +286,7 @@ void AnnotationItemTest::helperCanRemainVisibleWhileDrawingSurfaceIsUnmapped()
     QVERIFY(QMetaObject::invokeMethod(overlay, "showHelper"));
     QTRY_VERIFY(toast->isVisible());
     QCOMPARE(text->property("text").toString(),
-             QStringLiteral("Hold F8 to draw while recording"));
+             QStringLiteral("Hold Ctrl+Shift+D to draw while recording"));
     QVERIFY(!overlay->isVisible());
 
     QVERIFY(QMetaObject::invokeMethod(overlay, "hideHelper"));

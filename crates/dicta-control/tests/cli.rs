@@ -159,3 +159,33 @@ fn parses_typed_settings_commands_and_rejects_invalid_switches() {
     );
     assert!(CliInvocation::parse(["settings", "branch-locking", "maybe"]).is_err());
 }
+
+#[test]
+fn parses_event_follow_and_since_in_any_order() {
+    assert_eq!(
+        CliInvocation::parse(["events"]).unwrap().command,
+        Command::Events {
+            since_sequence: None,
+            follow: false,
+        }
+    );
+    assert_eq!(
+        CliInvocation::parse(["events", "--follow", "--since", "12"])
+            .unwrap()
+            .command,
+        Command::Events {
+            since_sequence: Some(12),
+            follow: true,
+        }
+    );
+    assert_eq!(
+        CliInvocation::parse(["events", "--since", "8", "--follow"])
+            .unwrap()
+            .command,
+        Command::Events {
+            since_sequence: Some(8),
+            follow: true,
+        }
+    );
+    assert!(CliInvocation::parse(["events", "--follow", "--follow"]).is_err());
+}

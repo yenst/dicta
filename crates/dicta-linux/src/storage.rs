@@ -5,6 +5,7 @@ use crate::{
 use chrono::{DateTime, Utc};
 use dicta_capture::{CaptureArtifact, CaptureBackend};
 use dicta_core::{
+    catalog::{self, CatalogSource},
     storage::{self, annotation_sidecar_path, read_json, write_json_atomic},
     AnnotationFile, ProjectId, RecordingFile, RecordingId, RecordingScope, TimelineNote,
     TranscriptionStatus,
@@ -14,7 +15,7 @@ use dicta_runtime::{Clock, PortError, PortErrorKind, StoragePort};
 use dicta_transcribe::TranscriptionOutput;
 use serde_json::{json, Map};
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     fs::{self, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
@@ -22,13 +23,6 @@ use std::{
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
-
-#[derive(Clone)]
-struct CatalogSource {
-    path: PathBuf,
-    project_id: ProjectId,
-    include_branches: bool,
-}
 
 struct RecordingLocation {
     metadata_path: PathBuf,
@@ -252,182 +246,34 @@ impl<K> LinuxStorage<K> {
                     .as_deref()
                     .map_or(registration, |source| PathBuf::from(source).join(".dicta")),
                 project_id: project.id,
+                project_name: project.name,
                 include_branches: project.source_path.is_some(),
             })
             .collect::<Vec<_>>();
-        let settings =
-            read_json::<storage::GeneralSettings>(&self.layout.root().join("settings.json"))
-                .unwrap_or_default();
-        let general_id = ProjectId::new(dicta_core::GENERAL_PROJECT_ID).map_err(|error| {
-            PortError::new(
-                PortErrorKind::Internal,
-                format!("core general project ID is invalid: {error}"),
-            )
-        })?;
-        sources.extend(
-            storage::general_storage_candidates(
-                self.layout.root(),
-                settings.general_path.as_deref(),
-            )
-            .into_iter()
-            .map(|path| CatalogSource {
-                path,
-                project_id: general_id.clone(),
-                include_branches: false,
-            }),
-        );
-        let mut seen = HashSet::new();
-        sources.retain(|source| {
-            let path = source
-                .path
-                .canonicalize()
-                .unwrap_or_else(|_| source.path.clone());
-            seen.insert((path, source.project_id.clone()))
-        });
+        sources.extend(catalog::general_sources(self.layout.root()));
+        catalog::deduplicate_sources(&mut sources);
         Ok(sources)
     }
 
-    fn recording_trees(source: &CatalogSource) -> Vec<PathBuf> {
-        if is_symlink(&source.path) {
-            return Vec::new();
-        }
-        let mut trees = vec![source.path.clone()];
-        if !source.include_branches {
-            return trees;
-        }
-        let Ok(branches) = fs::read_dir(source.path.join("branches")) else {
-            return trees;
-        };
-        trees.extend(branches.flatten().filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            (file_type.is_dir() && !file_type.is_symlink()).then(|| entry.path())
-        }));
-        trees
-    }
-
-    fn scan_recording_tree(source: &CatalogSource, tree: &Path) -> Vec<RecordingFile> {
-        let recordings_root = tree.join("recordings");
-        if is_symlink(tree) || is_symlink(&recordings_root) {
-            return Vec::new();
-        }
-        let Ok(canonical_root) = recordings_root.canonicalize() else {
-            return Vec::new();
-        };
-        let Ok(days) = fs::read_dir(&recordings_root) else {
-            return Vec::new();
-        };
-        let mut recordings = Vec::new();
-        for day in days.flatten() {
-            let Ok(day_type) = day.file_type() else {
-                continue;
-            };
-            if !day_type.is_dir() || day_type.is_symlink() {
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(day.path()) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                let path = entry.path();
-                let is_transcript = entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.ends_with(".transcript.json"));
-                if !file_type.is_file()
-                    || file_type.is_symlink()
-                    || is_transcript
-                    || path.extension().and_then(|value| value.to_str()) != Some("json")
-                {
-                    continue;
-                }
-                let Ok(mut recording) = read_json::<RecordingFile>(&path) else {
-                    continue;
-                };
-                if !recording.is_valid() || recording.project_id != source.project_id {
-                    continue;
-                }
-                let Ok(canonical_path) = path.canonicalize() else {
-                    continue;
-                };
-                if !canonical_path.starts_with(&canonical_root) {
-                    continue;
-                }
-                recording.metadata_path = canonical_path.to_string_lossy().into_owned();
-                attach_transcript(&mut recording, &canonical_path, &canonical_root);
-                recordings.push(recording);
-            }
-        }
-        recordings
-    }
-
     fn catalog_recordings(&self) -> Result<Vec<RecordingFile>, PortError> {
-        let mut recordings = Vec::new();
-        for source in self.catalog_sources()? {
-            for tree in Self::recording_trees(&source) {
-                recordings.extend(Self::scan_recording_tree(&source, &tree));
-            }
-        }
-        let mut seen = HashSet::new();
-        recordings.retain(|recording| {
-            seen.insert((
-                recording.project_id.clone(),
-                recording.id.clone(),
-                recording.metadata_path.clone(),
-            ))
-        });
-        Ok(recordings)
+        Ok(catalog::load_recordings(&self.catalog_sources()?).recordings)
     }
 
     fn locate_metadata(&self, recording_id: &RecordingId) -> Result<PathBuf, PortError> {
         if let Some(path) = self.metadata_paths.get(recording_id) {
             return Ok(path.clone());
         }
-        let projects = fs::read_dir(self.layout.root())
-            .map_err(|error| io_port_error("scan storage root", &error))?;
         let mut found = None;
-        for project in projects {
-            let project =
-                project.map_err(|error| io_port_error("inspect project entry", &error))?;
-            let file_type = project
-                .file_type()
-                .map_err(|error| io_port_error("inspect project entry type", &error))?;
-            if !file_type.is_dir() || file_type.is_symlink() {
+        for recording in self.catalog_recordings()? {
+            if recording.id != *recording_id {
                 continue;
             }
-            let recordings = project.path().join("recordings");
-            let days = match fs::read_dir(&recordings) {
-                Ok(days) => days,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(io_port_error("scan recording days", &error)),
-            };
-            for day in days {
-                let day = day.map_err(|error| io_port_error("inspect recording day", &error))?;
-                let file_type = day
-                    .file_type()
-                    .map_err(|error| io_port_error("inspect recording day type", &error))?;
-                if !file_type.is_dir() || file_type.is_symlink() {
-                    continue;
-                }
-                let candidate = day.path().join(format!("{recording_id}.json"));
-                let metadata = match fs::symlink_metadata(&candidate) {
-                    Ok(metadata) => metadata,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                    Err(error) => {
-                        return Err(io_port_error("inspect recording metadata", &error));
-                    }
-                };
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    continue;
-                }
-                if found.replace(candidate).is_some() {
-                    return Err(PortError::new(
-                        PortErrorKind::Internal,
-                        format!("recording ID `{recording_id}` is duplicated in storage"),
-                    ));
-                }
+            let path = PathBuf::from(&recording.metadata_path);
+            if found.replace(path).is_some() {
+                return Err(PortError::new(
+                    PortErrorKind::Internal,
+                    format!("recording ID `{recording_id}` is duplicated in storage"),
+                ));
             }
         }
         found.ok_or_else(|| {
@@ -757,6 +603,7 @@ where
                 name: "General".to_owned(),
                 created_at: std::time::UNIX_EPOCH.into(),
                 source_path: Some(general_path.to_string_lossy().into_owned()),
+                extra: serde_json::Map::new(),
             });
         }
         Ok(projects)
@@ -873,6 +720,7 @@ where
                         name: project_name.clone(),
                         created_at,
                         source_path: Some(source_text.clone()),
+                        extra: serde_json::Map::new(),
                     };
                     if let Err(error) = prepare_linked_project(&source, &project).and_then(|()| {
                         write_json_atomic(&registration.join("project.json"), &project).map_err(
@@ -913,6 +761,7 @@ where
                         name: name.clone(),
                         created_at,
                         source_path: None,
+                        extra: serde_json::Map::new(),
                     };
                     let result = fs::create_dir(registration.join("recordings"))
                         .map_err(|error| io_port_error("create project recordings", &error))
@@ -1019,7 +868,7 @@ where
             .map_err(|error| io_port_error("resolve recording metadata", &error))?;
         let mut recordings_root = None;
         for source in self.catalog_sources()? {
-            for tree in Self::recording_trees(&source) {
+            for tree in catalog::recording_trees(&source) {
                 let Ok(root) = tree.join("recordings").canonicalize() else {
                     continue;
                 };
@@ -1213,51 +1062,6 @@ where
         });
         write_json_atomic(&path, &recording)
             .map_err(|error| storage_port_error("save failed transcription state", &error))
-    }
-}
-
-fn attach_transcript(recording: &mut RecordingFile, metadata: &Path, recordings_root: &Path) {
-    if recording.transcript.is_some() {
-        return;
-    }
-    let mut candidates = recording
-        .transcript_path
-        .as_deref()
-        .map(PathBuf::from)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                metadata.parent().unwrap_or(recordings_root).join(path)
-            }
-        })
-        .into_iter()
-        .collect::<Vec<_>>();
-    let Some(stem) = metadata.file_stem().and_then(|value| value.to_str()) else {
-        return;
-    };
-    candidates.push(metadata.with_file_name(format!("{stem}.transcript.md")));
-    candidates.push(metadata.with_file_name(format!("{stem}.md")));
-    for candidate in candidates {
-        let Ok(file_type) = fs::symlink_metadata(&candidate).map(|metadata| metadata.file_type())
-        else {
-            continue;
-        };
-        if !file_type.is_file() || file_type.is_symlink() {
-            continue;
-        }
-        let Ok(canonical) = candidate.canonicalize() else {
-            continue;
-        };
-        if !canonical.starts_with(recordings_root) {
-            continue;
-        }
-        let Ok(transcript) = fs::read_to_string(&canonical) else {
-            continue;
-        };
-        recording.transcript_path = Some(canonical.to_string_lossy().into_owned());
-        recording.transcript = Some(transcript);
-        return;
     }
 }
 
@@ -1665,7 +1469,7 @@ fn recording_model(
         transcript: None,
         transcript_path: None,
         transcript_segments: Vec::new(),
-        transcription_status: TranscriptionStatus::Unknown,
+        transcription_status: TranscriptionStatus::Unknown(String::new()),
         transcription_error: None,
         transcription_language: None,
         poster_path: poster::extract(&artifact.path)

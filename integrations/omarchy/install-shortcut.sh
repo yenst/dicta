@@ -202,8 +202,9 @@ printf '%s\n' \
   "o.bind(\"$sequence\", \"Toggle Dicta recording\", \"dicta record toggle\")" \
   'hl.unbind("SUPER + ALT + A")' \
   'hl.unbind("F8")' \
-  'o.bind("F8", "Draw Dicta annotation (hold)", "dicta annotate enable")' \
-  'o.bind("F8", nil, "dicta annotate disable", { release = true })' \
+  'hl.unbind("CTRL + SHIFT + D")' \
+  'o.bind("CTRL + SHIFT + D", "Draw Dicta annotation (hold)", "dicta annotate enable")' \
+  'o.bind("CTRL + SHIFT + D", nil, "dicta annotate disable", { release = true })' \
   'o.window({ class = "^dicta-native$", title = "^Dicta Annotation Overlay$" }, {' \
   '  tag = "-default-opacity",' \
   '  float = true,' \
@@ -236,7 +237,7 @@ if ! validate_reload; then
 fi
 
 echo "Installed Dicta's Omarchy shortcut: $sequence → dicta record toggle"
-echo "Installed Dicta's annotation shortcut: hold F8 to draw"
+echo "Installed Dicta's annotation shortcut: hold CTRL + SHIFT + D to draw"
 echo "Bindings backup: $persistent_backup"
 if [[ -n "$previous_binding" && "$previous_binding" != "Toggle Dicta recording" ]]; then
   echo "Note: $sequence was previously bound to: $previous_binding"

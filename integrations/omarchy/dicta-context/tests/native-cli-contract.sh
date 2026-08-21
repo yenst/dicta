@@ -19,7 +19,7 @@ while IFS= read -r contract; do
     exit 1
   }
 done <<'CONTRACTS'
-[dictaCommand, "--no-start", "--json", "status"]
+[dictaCommand, "--no-start", "--json", "events", "--follow"]
 [dictaCommand, "ui"]
 [dictaCommand, "record", "toggle"]
 [dictaCommand, "recording", "open", recording]
@@ -52,7 +52,7 @@ for state_contract in 'property bool recordingActive: false' 'if (recordingActiv
   }
 done
 
-for refresh_contract in 'id: stateProcess' 'id: recordingsProcess' 'root.finishRecordingsRefresh(exitCode)'; do
+for refresh_contract in 'id: stateProcess' 'id: recordingsProcess' 'root.finishRecordingsRefresh(exitCode)' 'id: eventsProcess' 'root.startEventStream()'; do
   grep -Fq -- "$refresh_contract" "$service" || {
     echo "Two-stage refresh contract missing: $refresh_contract" >&2
     exit 1

@@ -1,11 +1,11 @@
 use crate::{storage::prepare_capture_path, LinuxConfig, LinuxInitError, StorageLayout};
 use dicta_capture::{
-    discover, CaptureCapabilities, CaptureError, CaptureOutput, Platform, Recorder,
+    discover, CaptureCapabilities, CaptureError, CaptureOutput, Platform, PollOutcome, Recorder,
     SessionEnvironment,
 };
 use dicta_core::RecordingId;
 use dicta_engine::RecordingSession;
-use dicta_runtime::{CapturePort, Completion, PortError, PortErrorKind};
+use dicta_runtime::{CapturePoll, CapturePort, Completion, PortError, PortErrorKind};
 use std::{fs, io};
 
 pub trait CaptureStartObserver {
@@ -182,6 +182,21 @@ where
             .stop()
             .map(Completion::Ready)
             .map_err(|error| capture_port_error(&error))
+    }
+
+    fn poll(&mut self) -> Result<CapturePoll, PortError> {
+        match self.recorder.poll() {
+            Ok(PollOutcome::Idle) => Ok(CapturePoll::Idle),
+            Ok(PollOutcome::Running { .. }) => Ok(CapturePoll::Running),
+            Ok(PollOutcome::Stopped { artifact, .. }) => {
+                self.active_recording_id = None;
+                Ok(CapturePoll::Stopped(artifact))
+            }
+            Err(error) => {
+                self.active_recording_id = None;
+                Err(capture_port_error(&error))
+            }
+        }
     }
 }
 

@@ -90,7 +90,7 @@ qt_add_qml_module(dicta-native
         qml/ThemeIcon.qml
         qml/FlatButton.qml
         qml/ProjectRail.qml
-        qml/RecordingComposer.qml
+        qml/SettingsPage.qml
         qml/RecordingList.qml
         qml/RecordingDetail.qml
         overlay/AnnotationOverlay.qml

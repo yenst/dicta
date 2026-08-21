@@ -89,6 +89,7 @@ mod tests {
                 name: "Demo".to_owned(),
                 created_at: std::time::UNIX_EPOCH.into(),
                 source_path: Some(repo.to_string_lossy().into_owned()),
+                extra: serde_json::Map::new(),
             },
         )
         .unwrap();

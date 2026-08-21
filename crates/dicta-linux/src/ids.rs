@@ -1,6 +1,6 @@
 use crate::StorageLayout;
 use chrono::{DateTime, Utc};
-use dicta_core::RecordingId;
+use dicta_core::{catalog, RecordingId};
 use dicta_runtime::{IdSource, PortError, PortErrorKind};
 use std::{
     fs::{self, OpenOptions},
@@ -59,34 +59,37 @@ impl IdSource for FilesystemIdSource {
 }
 
 fn recording_exists(root: &Path, id: &RecordingId) -> Result<bool, PortError> {
-    let projects =
-        fs::read_dir(root).map_err(|error| io_port_error("scan recording IDs", &error))?;
-    for project in projects {
-        let project = project.map_err(|error| io_port_error("inspect storage entry", &error))?;
-        let project_type = project
-            .file_type()
-            .map_err(|error| io_port_error("inspect storage entry type", &error))?;
-        if !project_type.is_dir() || project_type.is_symlink() {
-            continue;
-        }
-        let days = match fs::read_dir(project.path().join("recordings")) {
-            Ok(days) => days,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(io_port_error("scan recording directories", &error)),
-        };
-        for day in days {
-            let day = day.map_err(|error| io_port_error("inspect recording directory", &error))?;
-            let day_type = day
-                .file_type()
-                .map_err(|error| io_port_error("inspect recording directory type", &error))?;
-            if !day_type.is_dir() || day_type.is_symlink() {
-                continue;
-            }
-            if day.path().join(format!("{id}.json")).is_file()
-                || day.path().join(format!("{id}.mp4")).is_file()
-            {
+    let mut sources = catalog::registered_sources(root);
+    sources.extend(catalog::general_sources(root));
+    catalog::deduplicate_sources(&mut sources);
+    for source in sources {
+        for tree in catalog::recording_trees(&source) {
+            if recording_artifact_exists(&tree, id)? {
                 return Ok(true);
             }
+        }
+    }
+    Ok(false)
+}
+
+fn recording_artifact_exists(tree: &Path, id: &RecordingId) -> Result<bool, PortError> {
+    let days = match fs::read_dir(tree.join("recordings")) {
+        Ok(days) => days,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(io_port_error("scan recording directories", &error)),
+    };
+    for day in days {
+        let day = day.map_err(|error| io_port_error("inspect recording directory", &error))?;
+        let day_type = day
+            .file_type()
+            .map_err(|error| io_port_error("inspect recording directory type", &error))?;
+        if !day_type.is_dir() || day_type.is_symlink() {
+            continue;
+        }
+        if day.path().join(format!("{id}.json")).is_file()
+            || day.path().join(format!("{id}.mp4")).is_file()
+        {
+            return Ok(true);
         }
     }
     Ok(false)
@@ -133,6 +136,36 @@ mod tests {
         fs::create_dir_all(existing.parent().unwrap()).unwrap();
         fs::write(existing, b"{}").unwrap();
         let mut ids = FilesystemIdSource::new(StorageLayout::new(&root));
+        let id = ids.next_recording_id(UNIX_EPOCH).unwrap();
+        assert_eq!(id.as_str(), "19700101-00-00-00-0001");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_linked_recording_is_never_reused() {
+        let root = std::env::temp_dir().join(format!(
+            "dicta-linux-linked-id-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let repository = root.join("repo");
+        let storage = root.join("storage");
+        fs::create_dir_all(&storage).unwrap();
+        let existing = repository.join(".dicta/recordings/1970-01-01/19700101-00-00-00.mp4");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, b"video").unwrap();
+        dicta_core::storage::write_json_atomic(
+            &storage.join("demo/project.json"),
+            &dicta_core::ProjectFile {
+                id: dicta_core::ProjectId::new("demo").unwrap(),
+                name: "Demo".to_owned(),
+                created_at: std::time::UNIX_EPOCH.into(),
+                source_path: Some(repository.to_string_lossy().into_owned()),
+                extra: serde_json::Map::new(),
+            },
+        )
+        .unwrap();
+        let mut ids = FilesystemIdSource::new(StorageLayout::new(&storage));
         let id = ids.next_recording_id(UNIX_EPOCH).unwrap();
         assert_eq!(id.as_str(), "19700101-00-00-00-0001");
         fs::remove_dir_all(root).unwrap();

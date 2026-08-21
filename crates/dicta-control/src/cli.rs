@@ -77,12 +77,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             model: ModelTier::Quality,
         }),
         ["ui"] => Ok(Command::UiShow),
-        ["events"] => Ok(Command::Events {
-            since_sequence: None,
-        }),
-        ["events", "--since", sequence] => Ok(Command::Events {
-            since_sequence: Some(parse_number("sequence", sequence)?),
-        }),
+        words if words.first() == Some(&"events") => parse_events(&words[1..]),
         ["project", "list"] => Ok(Command::ProjectList),
         ["project", "current"] => Ok(Command::ProjectCurrent),
         ["project", "select", project] => Ok(Command::ProjectSelect {
@@ -171,6 +166,40 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             args.join(" ")
         ))),
     }
+}
+
+fn parse_events(arguments: &[&str]) -> Result<Command, CliError> {
+    let mut since_sequence = None;
+    let mut follow = false;
+    let mut position = 0;
+    while position < arguments.len() {
+        match arguments[position] {
+            "--follow" => {
+                if follow {
+                    return Err(CliError("--follow was provided more than once".to_string()));
+                }
+                follow = true;
+                position += 1;
+            }
+            "--since" => {
+                let value = arguments
+                    .get(position + 1)
+                    .ok_or_else(|| CliError("--since requires a value".to_string()))?;
+                if since_sequence
+                    .replace(parse_number("sequence", value)?)
+                    .is_some()
+                {
+                    return Err(CliError("--since was provided more than once".to_string()));
+                }
+                position += 2;
+            }
+            option => return Err(CliError(format!("unknown events option: {option}"))),
+        }
+    }
+    Ok(Command::Events {
+        since_sequence,
+        follow,
+    })
 }
 
 fn parse_recording_list(arguments: &[&str]) -> Result<Command, CliError> {

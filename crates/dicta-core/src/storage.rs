@@ -23,7 +23,7 @@ pub const TRANSCRIPTION_LANGUAGES: [&str; 6] = ["auto", "nl", "en", "fr", "de", 
 ///
 /// The wire names deliberately match the existing `settings.json` contract so
 /// moving between releases never requires a migration tool.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AppSettings {
     #[serde(default = "default_shortcut_id")]
     pub shortcut_id: String,
@@ -35,6 +35,8 @@ pub struct AppSettings {
     pub transcription_language: String,
     #[serde(default)]
     pub general_path: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl AppSettings {
@@ -63,6 +65,7 @@ impl Default for AppSettings {
             branch_locking: true,
             transcription_language: default_transcription_language(),
             general_path: None,
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -246,6 +249,17 @@ mod tests {
         assert_eq!(normalized.shortcut_id, "alt_shift_r");
         assert_eq!(normalized.transcription_language, "auto");
         assert_eq!(normalized.general_path, None);
+    }
+
+    #[test]
+    fn settings_preserve_unknown_fields() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"appearance":"system","shortcut_id":"alt_shift_r"}"#).unwrap();
+        assert_eq!(settings.extra["appearance"], "system");
+        assert_eq!(
+            serde_json::to_value(settings).unwrap()["appearance"],
+            "system"
+        );
     }
 
     #[test]

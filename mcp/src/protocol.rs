@@ -4,7 +4,12 @@ use serde_json::{json, Value};
 
 const SERVER_NAME: &str = "dicta";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-const SUPPORTED_PROTOCOLS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
+const SUPPORTED_PROTOCOLS: [&str; 4] = [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+];
 
 #[derive(Deserialize)]
 struct InitializeParams {
@@ -227,6 +232,8 @@ mod tests {
         let response = process_line(r#"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#).unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(response["result"]["serverInfo"]["name"], "dicta");
+        let grok = process_line(r#"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#).unwrap();
+        assert_eq!(grok["result"]["protocolVersion"], "2025-11-25");
     }
 
     #[test]

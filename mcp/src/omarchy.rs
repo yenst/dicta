@@ -126,6 +126,7 @@ fn general_project() -> ProjectFile {
         name: "General".to_string(),
         created_at: std::time::UNIX_EPOCH.into(),
         source_path: None,
+        extra: serde_json::Map::new(),
     }
 }
 
@@ -305,6 +306,7 @@ mod tests {
                 name: "Demo".to_string(),
                 created_at: "2026-08-20T08:00:00Z".parse().unwrap(),
                 source_path: None,
+                extra: serde_json::Map::new(),
             })
             .unwrap(),
         )

@@ -313,12 +313,13 @@ fn model_status_has_stable_human_and_json_output() {
 
 #[test]
 fn settings_have_stable_human_and_json_output() {
-    let response = Response::Settings(dicta_core::storage::AppSettings {
+    let response = Response::Settings(dicta_control::SettingsDocument {
         shortcut_id: "control_space".to_owned(),
         cleanup_merged_videos: false,
         branch_locking: true,
         transcription_language: "nl".to_owned(),
         general_path: Some("/data/general".to_owned()),
+        extra: serde_json::Map::new(),
     });
     for (arguments, json) in [
         (vec!["settings", "get"], false),
@@ -353,7 +354,7 @@ fn settings_have_stable_human_and_json_output() {
 
 #[test]
 fn online_recording_show_renders_shared_core_details() {
-    let recording: dicta_core::RecordingFile = serde_json::from_value(serde_json::json!({
+    let recording: dicta_control::RecordingDocument = serde_json::from_value(serde_json::json!({
         "id": "recording-details",
         "project_id": "demo",
         "duration_seconds": 12.5,
@@ -514,12 +515,13 @@ fn offline_show_latest_loads_the_typed_file_and_transcript_sidecar() {
     assert_eq!(code, ExitCode::Success);
     assert!(host.launches.borrow().is_empty());
     let recording: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(recording["id"], "newer");
+    assert_eq!(recording["type"], "recording_details");
+    assert_eq!(recording["data"]["id"], "newer");
     assert_eq!(
-        recording["transcript"],
+        recording["data"]["transcript"],
         "The overlay should stay transparent."
     );
-    assert!(recording["metadata_path"]
+    assert!(recording["data"]["metadata_path"]
         .as_str()
         .unwrap()
         .ends_with("newer.json"));

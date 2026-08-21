@@ -6,10 +6,10 @@ use dicta_control::{
     cli::{CliInvocation, OutputFormat},
     error::ExitCode,
     protocol::{
-        AppPhase, ModelInstallStage, ModelState, ModelStatusSummary, Response, StatusSnapshot,
-        TranscriptionState,
+        AppPhase, ModelInstallStage, ModelState, ModelStatusSummary, RecordingDocument, Response,
+        StatusSnapshot, TranscriptionState,
     },
-    Command,
+    Command, Event, EventEnvelope, ServerMessage,
 };
 use serde_json::json;
 use std::{
@@ -36,7 +36,7 @@ Commands:
   settings shortcut ID                Set the recording shortcut preset
   settings language <auto|nl|en|fr|de|es>
   settings cleanup <on|off>
-  settings cleanup-now [--project ID]
+  settings cleanup-now [--project ID]  Search all linked Git projects unless ID is set
   settings branch-locking <on|off>
   settings general-path <PATH|default>
   model status                        Show local Whisper model state
@@ -51,7 +51,7 @@ Commands:
   context <ID|latest> [--project ID] [--copy]
   annotate toggle | enable | disable | undo | clear
   annotate tool <pen|arrow|rectangle|spotlight>
-  events [--since SEQUENCE]
+  events [--since SEQUENCE] [--follow]
   doctor                              Inspect local native integration
 
 Options:
@@ -142,6 +142,23 @@ impl std::error::Error for ClientFailure {}
 pub trait ControlClient {
     fn probe(&self, socket: &Path) -> Result<(), ClientFailure>;
     fn request(&self, socket: &Path, command: Command) -> Result<Response, ClientFailure>;
+    fn stream_events(
+        &self,
+        socket: &Path,
+        since_sequence: Option<u64>,
+        follow: bool,
+        emit: &mut dyn FnMut(EventEnvelope) -> Result<(), ClientFailure>,
+    ) -> Result<(), ClientFailure> {
+        let _ = (follow, emit);
+        self.request(
+            socket,
+            Command::Events {
+                since_sequence,
+                follow: false,
+            },
+        )
+        .map(drop)
+    }
 }
 
 pub trait Host {
@@ -335,6 +352,19 @@ fn run_online(
         }
     }
 
+    if let Command::Events {
+        since_sequence,
+        follow,
+    } = cli.command
+    {
+        return runtime.control.stream_events(
+            &invocation.socket,
+            since_sequence,
+            follow,
+            &mut |event| write_event(output, cli.output, &event),
+        );
+    }
+
     let (command, should_copy) = without_server_copy(&cli.command);
     let response = runtime.control.request(&invocation.socket, command)?;
     if should_copy {
@@ -375,30 +405,13 @@ fn write_offline_read(
     read: &OfflineRead,
 ) -> Result<(), ClientFailure> {
     write_warnings(diagnostics, cli.output, &read.warnings)?;
-    let should_copy = matches!(cli.command, Command::Context { copy: true, .. });
-    match &read.payload {
-        OfflinePayload::Response(response) => write_response(output, cli.output, response),
-        OfflinePayload::Recording(recording) => {
-            if cli.output == OutputFormat::Json {
-                serde_json::to_writer(&mut *output, recording).map_err(json_failure)?;
-                writeln!(output).map_err(io_failure)
-            } else {
-                write_recording_file(output, recording)
-            }
-        }
-        OfflinePayload::Context(text) => {
-            if should_copy {
-                host.copy_text(text)?;
-            }
-            if cli.output == OutputFormat::Json {
-                serde_json::to_writer(&mut *output, &json!({ "text": text }))
-                    .map_err(json_failure)?;
-                writeln!(output).map_err(io_failure)
-            } else {
-                write_text(output, text)
-            }
+    let OfflinePayload::Response(response) = &read.payload;
+    if matches!(cli.command, Command::Context { copy: true, .. }) {
+        if let Response::Context { text } = response {
+            host.copy_text(text)?;
         }
     }
+    write_response(output, cli.output, response)
 }
 
 fn write_warnings(
@@ -423,7 +436,7 @@ fn write_warnings(
 
 fn write_recording_file(
     output: &mut dyn Write,
-    recording: &dicta_core::RecordingFile,
+    recording: &RecordingDocument,
 ) -> Result<(), ClientFailure> {
     writeln!(output, "id: {}", recording.id).map_err(io_failure)?;
     writeln!(output, "project: {}", recording.project_id).map_err(io_failure)?;
@@ -524,6 +537,64 @@ fn run_doctor(
             dicta_core::ANNOTATION_FORMAT_VERSION
         )
         .map_err(io_failure)
+    }
+}
+
+fn write_event(
+    output: &mut dyn Write,
+    format: OutputFormat,
+    envelope: &EventEnvelope,
+) -> Result<(), ClientFailure> {
+    if format == OutputFormat::Json {
+        serde_json::to_writer(&mut *output, envelope).map_err(json_failure)?;
+        return writeln!(output).map_err(io_failure);
+    }
+    match &envelope.event {
+        Event::UiShowRequested { sequence } => {
+            writeln!(output, "{sequence} ui_show_requested").map_err(io_failure)
+        }
+        Event::UiRecordingRequested {
+            sequence,
+            recording_id,
+        } => {
+            writeln!(output, "{sequence} ui_recording_requested {recording_id}").map_err(io_failure)
+        }
+        Event::StateChanged { sequence, status } => writeln!(
+            output,
+            "{sequence} state_changed {}",
+            phase_name(status.phase)
+        )
+        .map_err(io_failure),
+        Event::RecordingStarted {
+            sequence,
+            recording_id,
+        } => writeln!(output, "{sequence} recording_started {recording_id}").map_err(io_failure),
+        Event::RecordingStopped {
+            sequence,
+            recording_id,
+            duration_seconds,
+        } => writeln!(
+            output,
+            "{sequence} recording_stopped {recording_id} {duration_seconds:.3}s"
+        )
+        .map_err(io_failure),
+        Event::AnnotationCreated {
+            sequence,
+            tool,
+            timestamp_seconds,
+        } => writeln!(
+            output,
+            "{sequence} annotation_created {tool:?} {timestamp_seconds:.3}s"
+        )
+        .map_err(io_failure),
+        Event::TranscriptionCompleted {
+            sequence,
+            recording_id,
+        } => writeln!(output, "{sequence} transcription_completed {recording_id}")
+            .map_err(io_failure),
+        Event::Failed { sequence, error } => {
+            writeln!(output, "{sequence} failed {}", error.message).map_err(io_failure)
+        }
     }
 }
 
@@ -830,6 +901,57 @@ impl ControlClient for SystemControl {
         let mut client =
             dicta_control::socket::LocalClient::connect(socket).map_err(map_control_error)?;
         client.request(command).map_err(map_control_error)
+    }
+
+    fn stream_events(
+        &self,
+        socket: &Path,
+        since_sequence: Option<u64>,
+        follow: bool,
+        emit: &mut dyn FnMut(EventEnvelope) -> Result<(), ClientFailure>,
+    ) -> Result<(), ClientFailure> {
+        let mut client =
+            dicta_control::socket::LocalClient::connect(socket).map_err(map_control_error)?;
+        if follow {
+            client
+                .send(Command::Events {
+                    since_sequence,
+                    follow: true,
+                })
+                .map_err(map_control_error)?;
+            loop {
+                match client.read_message().map_err(map_control_error)? {
+                    ServerMessage::Event(event) => emit(event)?,
+                    ServerMessage::Response(response) => match response.payload {
+                        dicta_control::ResponsePayload::Success {
+                            result: Response::Accepted,
+                        } => {}
+                        dicta_control::ResponsePayload::Success { result } => {
+                            return Err(ClientFailure::new(
+                                FailureKind::Software,
+                                format!("event follow returned unexpected response: {result:?}"),
+                            ))
+                        }
+                        dicta_control::ResponsePayload::Failure { error } => {
+                            return Err(map_control_error(
+                                dicta_control::socket::ControlError::Remote(error),
+                            ))
+                        }
+                    },
+                }
+            }
+        } else {
+            client
+                .request(Command::Events {
+                    since_sequence,
+                    follow: false,
+                })
+                .map_err(map_control_error)?;
+            while let Some(event) = client.pop_event() {
+                emit(event)?;
+            }
+            Ok(())
+        }
     }
 }
 

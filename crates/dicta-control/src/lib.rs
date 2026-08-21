@@ -18,7 +18,8 @@ pub mod socket;
 pub use error::{ErrorCode, ExitCode, ProtocolError};
 pub use protocol::{
     AnnotationTool, CleanupSummary, Command, Event, EventEnvelope, ModelInstallStage, ModelState,
-    ModelStatusSummary, ModelTier, ProjectSummary, RecordingSelector, RecordingSummary,
-    RequestEnvelope, RequestId, Response, ResponseEnvelope, ResponsePayload, ServerMessage,
+    ModelStatusSummary, ModelTier, ProjectSummary, RecordingDocument, RecordingSelector,
+    RecordingSummary, RequestEnvelope, RequestId, Response, ResponseEnvelope, ResponsePayload,
+    ServerMessage, SettingsDocument, TimelineNoteDocument, TranscriptSegmentDocument,
     VoiceNoteState, VoiceNoteStatus, PROTOCOL_VERSION,
 };

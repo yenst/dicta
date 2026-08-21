@@ -7,6 +7,8 @@ Image {
     property color iconColor: "white"
     property int iconSize: 16
 
+    width: iconSize
+    height: iconSize
     source: iconName.length > 0
         ? "image://dicta-icons/" + iconName + "?color="
             + encodeURIComponent(String(iconColor))

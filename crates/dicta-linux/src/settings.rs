@@ -115,6 +115,7 @@ mod tests {
             branch_locking: false,
             transcription_language: "nl".to_owned(),
             general_path: Some("Archive".to_owned()),
+            extra: serde_json::Map::new(),
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load().unwrap(), settings);

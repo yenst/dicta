@@ -23,7 +23,7 @@ Window {
     signal passThroughRequested()
 
     function showHelper() {
-        showToast("Hold F8 to draw while recording");
+        showToast("Hold Ctrl+Shift+D to draw while recording");
     }
 
     function hideHelper() {
@@ -67,7 +67,7 @@ Window {
     }
 
     onAnnotationModeChanged: if (annotationMode)
-        showToast("Drawing · release F8 to interact")
+        showToast("Drawing · release Ctrl+Shift+D to interact")
 
     Timer {
         id: toastHideTimer

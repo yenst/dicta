@@ -1,5 +1,6 @@
 #include "native_bridge.h"
 #include "overlay_controller.h"
+#include "dicta_native.h"
 
 #include <QByteArray>
 #include <QClipboard>
@@ -23,134 +24,12 @@
 #include <utility>
 #include <vector>
 
-extern "C" {
-struct DictaNativeHostConfig {
-    const unsigned char *socketPath;
-    std::size_t socketPathLength;
-    const unsigned char *storageRoot;
-    std::size_t storageRootLength;
-    const unsigned char *outputName;
-    std::size_t outputNameLength;
-    std::uint32_t flags;
-};
-
-struct DictaNativeOverlayCommand {
-    std::uint32_t kind;
-    std::uint32_t tool;
-    const unsigned char *outputName;
-    std::size_t outputNameLength;
-};
-
-using DictaNativeOverlayCallback = void (*)(void *, const DictaNativeOverlayCommand *);
-
-const char *dicta_native_api_version();
-std::size_t dicta_native_utf8_scalar_count(const unsigned char *data, std::size_t len);
-int dicta_native_host_start(
-    const DictaNativeHostConfig *config,
-    DictaNativeOverlayCallback callback,
-    void *callbackContext
-);
-void dicta_native_host_request_stop();
-int dicta_native_host_join();
-std::uint32_t dicta_native_host_state();
-std::uint64_t dicta_native_host_stroke_count();
-std::size_t dicta_native_host_last_error(unsigned char *output, std::size_t capacity);
-int dicta_native_host_overlay_stroke(
-    std::uint32_t tool,
-    double startedAtSeconds,
-    double endedAtSeconds,
-    const double *xy,
-    std::size_t pointCount
-);
-int dicta_native_host_record_start(const unsigned char *note, std::size_t noteLength);
-int dicta_native_host_record_stop();
-int dicta_native_host_annotation_command(std::uint32_t action, std::uint32_t tool);
-int dicta_native_host_settings_set(
-    std::uint32_t key,
-    const unsigned char *value,
-    std::size_t valueLength
-);
-std::size_t dicta_native_host_cleanup_merged(
-    const unsigned char *projectId,
-    std::size_t projectIdLength,
-    unsigned char *output,
-    std::size_t capacity
-);
-int dicta_native_host_model_install_quality();
-std::size_t dicta_native_codex_mcp_status(unsigned char *output, std::size_t capacity);
-std::size_t dicta_native_codex_mcp_action(
-    std::uint32_t action,
-    unsigned char *output,
-    std::size_t capacity
-);
-int dicta_native_voice_note_start(
-    const unsigned char *recordingId,
-    std::size_t recordingIdLength,
-    double timestampSeconds
-);
-int dicta_native_voice_note_stop();
-int dicta_native_voice_note_cancel();
-std::size_t dicta_native_voice_note_status(unsigned char *output, std::size_t capacity);
-std::size_t dicta_native_host_ui_snapshot(unsigned char *output, std::size_t capacity);
-std::size_t dicta_native_host_recordings_for_project(
-    const unsigned char *projectId,
-    std::size_t projectIdLength,
-    unsigned char *output,
-    std::size_t capacity
-);
-std::size_t dicta_native_host_recording_detail(
-    const unsigned char *recordingId,
-    std::size_t recordingIdLength,
-    unsigned char *output,
-    std::size_t capacity
-);
-int dicta_native_host_recording_delete(
-    const unsigned char *recordingId,
-    std::size_t recordingIdLength
-);
-int dicta_native_host_recording_transcribe(
-    const unsigned char *recordingId,
-    std::size_t recordingIdLength
-);
-int dicta_native_host_timeline_notes_set(
-    const unsigned char *recordingId,
-    std::size_t recordingIdLength,
-    const unsigned char *notesJson,
-    std::size_t notesJsonLength
-);
-int dicta_native_host_project_select(
-    const unsigned char *projectId,
-    std::size_t projectIdLength
-);
-int dicta_native_host_project_remove(
-    const unsigned char *projectId,
-    std::size_t projectIdLength
-);
-int dicta_native_host_project_add(
-    const unsigned char *path,
-    std::size_t pathLength
-);
-int dicta_native_host_project_create(
-    const unsigned char *name,
-    std::size_t nameLength
-);
-std::size_t dicta_native_host_recording_context(
-    const unsigned char *recordingId,
-    std::size_t recordingIdLength,
-    const unsigned char *projectId,
-    std::size_t projectIdLength,
-    unsigned char *output,
-    std::size_t capacity
-);
-}
-
 namespace {
-constexpr std::uint32_t HostFlagE2e = 1;
-constexpr qsizetype UiSnapshotCapacity = 64 * 1024;
-constexpr qsizetype RecordingDetailCapacity = 1024 * 1024;
-constexpr qsizetype CleanupSummaryCapacity = 64 * 1024;
-constexpr qsizetype CodexMcpStatusCapacity = 16 * 1024;
-constexpr qsizetype VoiceNoteStatusCapacity = 16 * 1024;
+constexpr qsizetype UiSnapshotCapacity = DICTA_NATIVE_UI_SNAPSHOT_MAX_BYTES;
+constexpr qsizetype RecordingDetailCapacity = DICTA_NATIVE_RECORDING_DETAIL_MAX_BYTES;
+constexpr qsizetype CleanupSummaryCapacity = DICTA_NATIVE_CLEANUP_SUMMARY_MAX_BYTES;
+constexpr qsizetype CodexMcpStatusCapacity = DICTA_NATIVE_CODEX_MCP_STATUS_MAX_BYTES;
+constexpr qsizetype VoiceNoteStatusCapacity = DICTA_NATIVE_VOICE_NOTE_STATUS_MAX_BYTES;
 
 QString hostStateName(const std::uint32_t state)
 {
@@ -220,18 +99,6 @@ NativeBridge::~NativeBridge()
 QString NativeBridge::apiVersion() const
 {
     return QString::fromUtf8(dicta_native_api_version());
-}
-
-QString NativeBridge::inspect(const QString &text) const
-{
-    const QByteArray utf8 = text.toUtf8();
-    const auto *data = reinterpret_cast<const unsigned char *>(utf8.constData());
-    const std::size_t count = dicta_native_utf8_scalar_count(
-        data,
-        static_cast<std::size_t>(utf8.size())
-    );
-
-    return tr("Rust received %1 Unicode scalar(s).").arg(count);
 }
 
 QString NativeBridge::hostState() const
@@ -351,7 +218,7 @@ bool NativeBridge::startRecording(const QString &note)
         return false;
     }
     const bool refreshed = refreshDashboard();
-    m_overlay.showToast(tr("Recording started · hold F8 to draw"));
+    m_overlay.showToast(tr("Recording started · hold Ctrl+Shift+D to draw"));
     return refreshed;
 }
 
@@ -372,37 +239,39 @@ bool NativeBridge::stopRecording()
 
 bool NativeBridge::setAnnotationsEnabled(const bool enabled)
 {
-    return sendAnnotationCommand(enabled ? 1U : 2U);
+    return sendAnnotationCommand(
+        enabled ? DICTA_NATIVE_ANNOTATION_ENABLE : DICTA_NATIVE_ANNOTATION_DISABLE
+    );
 }
 
 bool NativeBridge::chooseAnnotationTool(const QString &tool)
 {
     const QString normalized = tool.trimmed().toLower();
-    quint32 value = 0;
+    quint32 value = DICTA_NATIVE_TOOL_PEN;
     if (normalized == QStringLiteral("pen")) {
-        value = 0;
+        value = DICTA_NATIVE_TOOL_PEN;
     } else if (normalized == QStringLiteral("arrow")) {
-        value = 1;
+        value = DICTA_NATIVE_TOOL_ARROW;
     } else if (normalized == QStringLiteral("rectangle")) {
-        value = 2;
+        value = DICTA_NATIVE_TOOL_RECTANGLE;
     } else if (normalized == QStringLiteral("spotlight")) {
-        value = 3;
+        value = DICTA_NATIVE_TOOL_SPOTLIGHT;
     } else {
         m_uiError = tr("Unknown annotation tool: %1").arg(tool);
         emit dashboardChanged();
         return false;
     }
-    return sendAnnotationCommand(3U, value);
+    return sendAnnotationCommand(DICTA_NATIVE_ANNOTATION_SET_TOOL, value);
 }
 
 bool NativeBridge::undoAnnotation()
 {
-    return sendAnnotationCommand(4U);
+    return sendAnnotationCommand(DICTA_NATIVE_ANNOTATION_UNDO);
 }
 
 bool NativeBridge::clearAnnotations()
 {
-    return sendAnnotationCommand(5U);
+    return sendAnnotationCommand(DICTA_NATIVE_ANNOTATION_CLEAR);
 }
 
 bool NativeBridge::sendAnnotationCommand(const quint32 action, const quint32 tool)
@@ -588,41 +457,41 @@ bool NativeBridge::updateSetting(const quint32 key, const QString &value)
 
 bool NativeBridge::setShortcut(const QString &shortcutId)
 {
-    return updateSetting(1, shortcutId.trimmed());
+    return updateSetting(DICTA_NATIVE_SETTINGS_SHORTCUT, shortcutId.trimmed());
 }
 
 bool NativeBridge::setCleanupMergedVideos(const bool enabled)
 {
-    return updateSetting(2, enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    return updateSetting(
+        DICTA_NATIVE_SETTINGS_CLEANUP,
+        enabled ? QStringLiteral("true") : QStringLiteral("false")
+    );
 }
 
 bool NativeBridge::setBranchLocking(const bool enabled)
 {
-    return updateSetting(3, enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    return updateSetting(
+        DICTA_NATIVE_SETTINGS_BRANCH_LOCKING,
+        enabled ? QStringLiteral("true") : QStringLiteral("false")
+    );
 }
 
 bool NativeBridge::setTranscriptionLanguage(const QString &language)
 {
-    return updateSetting(4, language.trimmed());
+    return updateSetting(DICTA_NATIVE_SETTINGS_LANGUAGE, language.trimmed());
 }
 
 bool NativeBridge::setGeneralPath(const QString &path)
 {
-    return updateSetting(5, path.trimmed());
+    return updateSetting(DICTA_NATIVE_SETTINGS_GENERAL_PATH, path.trimmed());
 }
 
 bool NativeBridge::cleanupMergedVideos()
 {
-    const QByteArray project = m_currentProject.value(QStringLiteral("id")).toString().toUtf8();
-    if (project.isEmpty()) {
-        m_uiError = tr("Select a linked project before cleaning merged videos.");
-        emit dashboardChanged();
-        return false;
-    }
     QByteArray bytes(CleanupSummaryCapacity, '\0');
     const std::size_t length = dicta_native_host_cleanup_merged(
-        reinterpret_cast<const unsigned char *>(project.constData()),
-        std::size_t(project.size()),
+        nullptr,
+        0,
         reinterpret_cast<unsigned char *>(bytes.data()),
         std::size_t(bytes.size())
     );
@@ -663,12 +532,12 @@ bool NativeBridge::refreshCodexMcp()
 
 bool NativeBridge::connectCodexMcp()
 {
-    return applyCodexMcpAction(1U);
+    return applyCodexMcpAction(DICTA_NATIVE_CODEX_MCP_CONNECT);
 }
 
 bool NativeBridge::restartCodexMcp()
 {
-    return applyCodexMcpAction(2U);
+    return applyCodexMcpAction(DICTA_NATIVE_CODEX_MCP_RESTART);
 }
 
 bool NativeBridge::applyCodexMcpAction(const quint32 action)
@@ -1231,7 +1100,7 @@ bool NativeBridge::startHost(
         std::size_t(storage.size()),
         reinterpret_cast<const unsigned char *>(output.constData()),
         std::size_t(output.size()),
-        e2e ? HostFlagE2e : 0,
+        e2e ? std::uint32_t(DICTA_NATIVE_HOST_FLAG_E2E) : 0U,
     };
     const int result = dicta_native_host_start(
         &config,
@@ -1279,11 +1148,11 @@ void NativeBridge::overlayCallback(
     auto *bridge = static_cast<NativeBridge *>(context);
     const quint32 kind = command->kind;
     const quint32 tool = command->tool;
-    const QString outputName = command->outputNameLength == 0
+    const QString outputName = command->output_name_len == 0
         ? QString()
         : QString::fromUtf8(
-            reinterpret_cast<const char *>(command->outputName),
-            qsizetype(command->outputNameLength)
+            reinterpret_cast<const char *>(command->output_name),
+            qsizetype(command->output_name_len)
         );
     QMetaObject::invokeMethod(
         bridge,
@@ -1301,35 +1170,35 @@ void NativeBridge::dispatchOverlayCommand(
 )
 {
     switch (kind) {
-    case 1:
+    case DICTA_NATIVE_OVERLAY_SHOW:
         if (!m_overlay.showOnOutput(m_e2e ? QString() : outputName)) {
             return;
         }
         break;
-    case 2:
+    case DICTA_NATIVE_OVERLAY_START_CLOCK:
         if (!m_overlay.startRecordingClock()) {
             return;
         }
         break;
-    case 3:
+    case DICTA_NATIVE_OVERLAY_SET_ENABLED:
         m_overlay.setAnnotationMode(tool != 0);
         break;
-    case 4:
+    case DICTA_NATIVE_OVERLAY_SET_TOOL:
         m_overlay.setTool(static_cast<OverlayController::Tool>(tool));
         break;
-    case 5:
+    case DICTA_NATIVE_OVERLAY_UNDO:
         (void)m_overlay.undo();
         break;
-    case 6:
+    case DICTA_NATIVE_OVERLAY_CLEAR:
         m_overlay.clear();
         break;
-    case 7:
+    case DICTA_NATIVE_OVERLAY_FINISH:
         m_overlay.finishAndHide();
         break;
-    case 8:
+    case DICTA_NATIVE_UI_SHOW_REQUESTED:
         emit uiShowRequested();
         break;
-    case 9:
+    case DICTA_NATIVE_UI_OPEN_RECORDING_REQUESTED:
         if (selectRecording(outputName)) {
             emit uiShowRequested();
         }

@@ -80,12 +80,13 @@ fn model_commands_and_status_have_a_stable_typed_wire_shape() {
 fn settings_reuse_the_legacy_document_shape_on_the_wire() {
     let response = ResponseEnvelope::success(
         request_id(44),
-        Response::Settings(dicta_core::storage::AppSettings {
+        Response::Settings(dicta_control::SettingsDocument {
             shortcut_id: "control_space".to_owned(),
             cleanup_merged_videos: false,
             branch_locking: true,
             transcription_language: "nl".to_owned(),
             general_path: Some("/data/general".to_owned()),
+            extra: serde_json::Map::new(),
         }),
     );
     let encoded = serde_json::to_value(&response).unwrap();
@@ -152,7 +153,7 @@ fn responses_preserve_request_correlation() {
 
 #[test]
 fn recording_details_reuse_the_versioned_core_model() {
-    let recording: dicta_core::RecordingFile = serde_json::from_value(serde_json::json!({
+    let recording: dicta_control::RecordingDocument = serde_json::from_value(serde_json::json!({
         "id": "recording-27",
         "project_id": "dicta",
         "note": "Keep the transcript fields",

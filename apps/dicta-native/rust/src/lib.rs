@@ -318,10 +318,12 @@ pub unsafe extern "C" fn dicta_native_host_settings_set(
 }
 
 /// Runs safe merged-branch video cleanup and writes its typed JSON summary.
+/// An empty project ID searches every linked Git project.
 ///
 /// # Safety
-/// The project ID must be readable UTF-8 and `output` must expose `capacity`
-/// writable bytes no larger than [`CLEANUP_SUMMARY_MAX_BYTES`].
+/// When `project_id_len` is non-zero the project ID must be readable UTF-8.
+/// `output` must expose `capacity` writable bytes no larger than
+/// [`CLEANUP_SUMMARY_MAX_BYTES`].
 #[no_mangle]
 pub unsafe extern "C" fn dicta_native_host_cleanup_merged(
     project_id: *const u8,
@@ -329,16 +331,20 @@ pub unsafe extern "C" fn dicta_native_host_cleanup_merged(
     output: *mut u8,
     capacity: usize,
 ) -> usize {
-    if project_id_len == 0 || project_id_len > 256 {
+    if project_id_len > 256 {
         host::set_detached_error("cleanup project ID is invalid".to_owned());
         return 0;
     }
-    // SAFETY: The function contract establishes the readable project ID range.
-    let project_id = match unsafe { utf8_field(project_id, project_id_len, "project ID") } {
-        Ok(value) => value,
-        Err(message) => {
-            host::set_detached_error(message);
-            return 0;
+    let project_id = if project_id_len == 0 {
+        String::new()
+    } else {
+        // SAFETY: The function contract establishes the readable project ID range.
+        match unsafe { utf8_field(project_id, project_id_len, "project ID") } {
+            Ok(value) => value,
+            Err(message) => {
+                host::set_detached_error(message);
+                return 0;
+            }
         }
     };
     let summary = match host::cleanup_merged(project_id) {
@@ -543,7 +549,8 @@ pub unsafe extern "C" fn dicta_native_host_recording_transcribe(
 /// # Safety
 /// `recording_id` and `notes_json` must contain their declared number of
 /// readable bytes. `notes_json` must encode an array of core `TimelineNote`
-/// objects and may not exceed [`TIMELINE_NOTES_MAX_BYTES`].
+/// objects and may not exceed [`TIMELINE_NOTES_MAX_BYTES`]. The JSON shape
+/// matches the control-protocol `TimelineNoteDocument`.
 #[no_mangle]
 pub unsafe extern "C" fn dicta_native_host_timeline_notes_set(
     recording_id: *const u8,
