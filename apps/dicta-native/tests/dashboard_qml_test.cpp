@@ -263,7 +263,31 @@ public:
     Q_INVOKABLE bool deleteSelectedRecording()
     {
         ++deleteCalls;
+        const QString deletedId = selectedRecordingId;
+        int deletedIndex = -1;
+        for (int index = 0; index < recentRecordings.size(); ++index) {
+            if (recentRecordings.at(index).toMap()
+                    .value(QStringLiteral("id")).toString() == deletedId) {
+                deletedIndex = index;
+                break;
+            }
+        }
+        QString replacementId;
+        if (deletedIndex >= 0) {
+            const int replacementIndex = deletedIndex + 1 < recentRecordings.size()
+                ? deletedIndex + 1 : deletedIndex - 1;
+            if (replacementIndex >= 0) {
+                replacementId = recentRecordings.at(replacementIndex).toMap()
+                    .value(QStringLiteral("id")).toString();
+            }
+            recentRecordings.removeAt(deletedIndex);
+        }
         closeRecording();
+        emit changed();
+        emit dashboardChanged();
+        if (!replacementId.isEmpty()) {
+            selectRecording(replacementId);
+        }
         return true;
     }
 
@@ -907,6 +931,8 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QCOMPARE(panel->property("pendingDeleteId").toString(), QStringLiteral("second"));
     QTest::keyClick(window, Qt::Key_Delete);
     QCOMPARE(bridge.deleteCalls, 1);
+    QTRY_COMPARE(bridge.selectedRecordingId, QStringLiteral("first"));
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Recording deleted"));
 }
 
 void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
@@ -965,6 +991,17 @@ void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
     QVERIFY(linked.toBool());
     QCOMPARE(bridge.addProjectCalls, 1);
     QCOMPARE(bridge.addedProjectPath, QStringLiteral("/tmp/linked-repository"));
+
+    QTest::keyClick(window, Qt::Key_Down);
+    QCOMPARE(rail->property("keyboardIndex").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Delete);
+    QCOMPARE(bridge.removeProjectCalls, 0);
+    QCOMPARE(rail->property("pendingDeleteId").toString(), QStringLiteral("dicta"));
+    QTest::keyClick(window, Qt::Key_Delete);
+    QCOMPARE(bridge.removeProjectCalls, 1);
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Project deleted · dicta"));
+    QCOMPARE(bridge.currentProject.value(QStringLiteral("id")).toString(),
+             QStringLiteral("peepel"));
 }
 
 void DashboardQmlTest::settingsCloseWithEscapeAndLeftArrow()

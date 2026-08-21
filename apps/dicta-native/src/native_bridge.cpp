@@ -895,9 +895,24 @@ void NativeBridge::closeRecording()
 
 bool NativeBridge::deleteSelectedRecording()
 {
-    const QByteArray id = selectedRecordingId().toUtf8();
+    const QString selectedId = selectedRecordingId();
+    const QByteArray id = selectedId.toUtf8();
     if (id.isEmpty()) {
         return false;
+    }
+    QString replacementId;
+    for (qsizetype index = 0; index < m_recentRecordings.size(); ++index) {
+        const QVariantMap recording = m_recentRecordings.at(index).toMap();
+        if (recording.value(QStringLiteral("id")).toString() != selectedId) {
+            continue;
+        }
+        const qsizetype replacementIndex = index + 1 < m_recentRecordings.size()
+            ? index + 1 : index - 1;
+        if (replacementIndex >= 0 && replacementIndex < m_recentRecordings.size()) {
+            replacementId = m_recentRecordings.at(replacementIndex).toMap()
+                .value(QStringLiteral("id")).toString();
+        }
+        break;
     }
     const int result = dicta_native_host_recording_delete(
         reinterpret_cast<const unsigned char *>(id.constData()),
@@ -912,7 +927,13 @@ bool NativeBridge::deleteSelectedRecording()
         return false;
     }
     closeRecording();
-    return refreshDashboard();
+    if (!refreshDashboard()) {
+        return false;
+    }
+    if (!replacementId.isEmpty()) {
+        (void)selectRecording(replacementId);
+    }
+    return true;
 }
 
 bool NativeBridge::transcribeSelectedRecording()

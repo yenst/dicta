@@ -159,8 +159,11 @@ ApplicationWindow {
             detailPage.togglePlayback()
         else if (event.key === Qt.Key_C && showingDetail)
             detailPage.copyContext()
-        else if (event.key === Qt.Key_Delete && showingDetail) {
-            if (!recordingPanel.requestDelete() && root.recording)
+        else if (event.key === Qt.Key_Delete) {
+            var deleteAccepted = navigationColumn === 0
+                ? projectRail.requestDelete()
+                : showingDetail && recordingPanel.requestDelete()
+            if (!deleteAccepted && root.recording)
                 bridge.showToast("Stop recording before deleting")
         }
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {

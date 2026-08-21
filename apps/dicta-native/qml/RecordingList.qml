@@ -25,8 +25,10 @@ Item {
             return true
         }
         var removed = bridge.deleteSelectedRecording()
-        if (removed)
+        if (removed) {
             pendingDeleteId = ""
+            bridge.showToast("Recording deleted")
+        }
         return removed
     }
 
@@ -253,28 +255,16 @@ Item {
                         anchors.top: parent.top
                         anchors.topMargin: 18 * root.dictaTheme.spacingScale
                         width: 44 * root.dictaTheme.spacingScale
+                        horizontalAlignment: Text.AlignHCenter
                         text: root.timeLabel(recordingRow.modelData.started_at)
                         color: root.dictaTheme.foreground
                         font.family: root.dictaTheme.fontFamily
                         font.pixelSize: root.dictaTheme.baseFontSize
                     }
 
-                    ThemeIcon {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 78 * root.dictaTheme.spacingScale
-                        anchors.top: parent.top
-                        anchors.topMargin: 18 * root.dictaTheme.spacingScale
-                        width: 18 * root.dictaTheme.spacingScale
-                        height: width
-                        iconName: "play"
-                        iconColor: recordingRow.selected
-                            ? root.dictaTheme.accent : root.dictaTheme.foreground
-                        iconSize: Math.round(width)
-                    }
-
                     Column {
                         anchors.left: parent.left
-                        anchors.leftMargin: 116 * root.dictaTheme.spacingScale
+                        anchors.leftMargin: 86 * root.dictaTheme.spacingScale
                         anchors.right: statusColumn.left
                         anchors.rightMargin: 12 * root.dictaTheme.spacingScale
                         anchors.top: parent.top
@@ -303,28 +293,65 @@ Item {
                         }
                     }
 
-                    Column {
+                    Item {
                         id: statusColumn
                         anchors.right: parent.right
                         anchors.rightMargin: 22 * root.dictaTheme.spacingScale
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 5 * root.dictaTheme.spacingScale
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: 82 * root.dictaTheme.spacingScale
                         Text {
                             anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.topMargin: 17 * root.dictaTheme.spacingScale
                             text: root.duration(recordingRow.modelData.duration_seconds)
                             color: root.dictaTheme.darkForeground
                             font.family: root.dictaTheme.fontFamily
                             font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
                         }
-                        Text {
+                        ThemeIcon {
+                            visible: recordingRow.modelData.transcription === "complete"
+                                && !copyRecordingButton.visible
                             anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 17 * root.dictaTheme.spacingScale
+                            width: 16 * root.dictaTheme.spacingScale
+                            height: width
+                            iconName: "check"
+                            iconColor: root.dictaTheme.foreground
+                            iconSize: Math.round(width)
+                        }
+                        Text {
+                            visible: recordingRow.modelData.transcription !== "complete"
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 17 * root.dictaTheme.spacingScale
                             text: root.statusLabel(recordingRow.modelData.transcription)
                             color: recordingRow.modelData.transcription === "failed"
                                 ? root.dictaTheme.yellow
-                                : recordingRow.modelData.transcription === "complete"
-                                    ? root.dictaTheme.accent : root.dictaTheme.darkForeground
+                                : root.dictaTheme.darkForeground
                             font.family: root.dictaTheme.fontFamily
                             font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
+                        }
+                        FlatButton {
+                            id: copyRecordingButton
+                            objectName: "copyRecording-" + recordingRow.modelData.id
+                            visible: rowMouse.containsMouse && !recordingRow.deleteArmed
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 9 * root.dictaTheme.spacingScale
+                            width: 30 * root.dictaTheme.spacingScale
+                            height: width
+                            z: 2
+                            dictaTheme: root.dictaTheme
+                            iconName: "copy"
+                            iconOnly: true
+                            quiet: true
+                            toolTip: "Copy recording ID"
+                            onClicked: {
+                                root.bridge.copyText(recordingRow.modelData.id)
+                                root.bridge.showToast("Recording ID copied")
+                            }
                         }
                     }
 

@@ -11,6 +11,8 @@ Item {
     property bool settingsActive: false
     property bool keyboardFocused: false
     property int keyboardIndex: 0
+    property string pendingDeleteId: ""
+    readonly property bool deleteActionVisible: pendingDeleteId.length > 0
     signal settingsRequested()
     signal addProjectRequested()
     signal keyboardFocusRequested()
@@ -65,6 +67,56 @@ Item {
         return bridge.selectRecordingProject(rows[keyboardIndex].id)
     }
 
+    function projectIndex(projectId) {
+        var rows = sortedProjects()
+        for (var i = 0; i < rows.length; ++i) {
+            if (String(rows[i].id || "") === String(projectId || ""))
+                return i
+        }
+        return -1
+    }
+
+    function requestDelete() {
+        var rows = sortedProjects()
+        if (keyboardIndex < 0 || keyboardIndex >= rows.length
+                || isGeneral(rows[keyboardIndex]) || bridge.runtimePhase !== "idle")
+            return false
+        var projectId = String(rows[keyboardIndex].id || "")
+        if (pendingDeleteId !== projectId) {
+            pendingDeleteId = projectId
+            projectDeleteArmTimer.restart()
+            return true
+        }
+        return confirmDelete(projectId)
+    }
+
+    function confirmDelete(projectId) {
+        if (pendingDeleteId !== projectId || bridge.runtimePhase !== "idle")
+            return false
+        var rows = sortedProjects()
+        var index = projectIndex(projectId)
+        if (index < 0 || isGeneral(rows[index]))
+            return false
+        var projectName = String(rows[index].name || rows[index].id || "Project")
+        var replacementId = ""
+        if (index + 1 < rows.length)
+            replacementId = String(rows[index + 1].id || "")
+        else if (index > 0)
+            replacementId = String(rows[index - 1].id || "")
+        if (!bridge.removeProject(projectId))
+            return false
+        pendingDeleteId = ""
+        if (replacementId.length) {
+            bridge.selectProject(replacementId)
+            keyboardIndex = Math.max(0, projectIndex(replacementId))
+            projectList.positionViewAtIndex(keyboardIndex, ListView.Contain)
+        } else {
+            keyboardIndex = 0
+        }
+        bridge.showToast("Project deleted · " + projectName)
+        return true
+    }
+
     onKeyboardFocusedChanged: if (keyboardFocused) syncKeyboardIndex()
 
     Connections {
@@ -73,6 +125,13 @@ Item {
             if (!root.keyboardFocused)
                 root.syncKeyboardIndex()
         }
+    }
+
+    Timer {
+        id: projectDeleteArmTimer
+        interval: 5000
+        repeat: false
+        onTriggered: root.pendingDeleteId = ""
     }
 
     Rectangle {
@@ -148,9 +207,39 @@ Item {
                 property bool recordingSelected: Boolean(modelData.recordingSelected)
                 property bool keyboardSelected: root.keyboardFocused
                     && root.keyboardIndex === index
+                property bool deleteArmed: root.pendingDeleteId === modelData.id
+                property real surfaceOffset: deleteArmed
+                    ? -58 * root.dictaTheme.spacingScale : 0
+
+                Behavior on surfaceOffset {
+                    NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                }
+
+                Rectangle {
+                    visible: root.deleteActionVisible && projectRow.deleteArmed
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: 58 * root.dictaTheme.spacingScale
+                    color: Qt.rgba(root.dictaTheme.red.r, root.dictaTheme.red.g,
+                        root.dictaTheme.red.b, 0.11)
+
+                    FlatButton {
+                        objectName: "confirmProjectDelete-" + projectRow.modelData.id
+                        anchors.centerIn: parent
+                        dictaTheme: root.dictaTheme
+                        iconName: "delete"
+                        iconOnly: true
+                        quiet: true
+                        destructive: true
+                        toolTip: "Delete project"
+                        onClicked: root.confirmDelete(projectRow.modelData.id)
+                    }
+                }
 
                 Rectangle {
                     anchors.fill: parent
+                    transform: Translate { x: projectRow.surfaceOffset }
                     color: projectRow.selected
                         ? Qt.rgba(root.dictaTheme.accent.r, root.dictaTheme.accent.g,
                             root.dictaTheme.accent.b, 0.12)
@@ -171,6 +260,7 @@ Item {
                     width: 2
                     color: projectRow.selected
                         ? root.dictaTheme.accent : root.dictaTheme.foreground
+                    transform: Translate { x: projectRow.surfaceOffset }
                 }
 
                 ThemeIcon {
@@ -183,6 +273,7 @@ Item {
                     iconColor: projectRow.selected
                         ? root.dictaTheme.accent : root.dictaTheme.darkForeground
                     iconSize: Math.round(width)
+                    transform: Translate { x: projectRow.surfaceOffset }
                 }
 
                 Column {
@@ -192,6 +283,7 @@ Item {
                     anchors.rightMargin: 76 * root.dictaTheme.spacingScale
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 3 * root.dictaTheme.spacingScale
+                    transform: Translate { x: projectRow.surfaceOffset }
 
                     Text {
                         width: parent.width
@@ -218,63 +310,14 @@ Item {
                     objectName: "recordingDestinationCheck"
                     visible: projectRow.recordingSelected
                     anchors.right: parent.right
-                    anchors.rightMargin: 43 * root.dictaTheme.spacingScale
+                    anchors.rightMargin: 22 * root.dictaTheme.spacingScale
                     anchors.verticalCenter: parent.verticalCenter
                     width: 17 * root.dictaTheme.spacingScale
                     height: width
                     iconName: "check"
                     iconColor: root.dictaTheme.accent
                     iconSize: Math.round(width)
-                }
-
-                FlatButton {
-                    id: projectActionsButton
-                    objectName: "projectActions-" + projectRow.modelData.id
-                    visible: !root.isGeneral(projectRow.modelData)
-                        && (projectMouse.containsMouse || hovered || projectActions.opened)
-                    anchors.right: parent.right
-                    anchors.rightMargin: 7 * root.dictaTheme.spacingScale
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 30 * root.dictaTheme.spacingScale
-                    height: width
-                    z: 2
-                    dictaTheme: root.dictaTheme
-                    iconName: "more"
-                    iconOnly: true
-                    quiet: true
-                    toolTip: "Project actions"
-                    onClicked: projectActions.open()
-                }
-
-                Popup {
-                    id: projectActions
-                    x: projectRow.width - width - 8 * root.dictaTheme.spacingScale
-                    y: projectRow.height - 4 * root.dictaTheme.spacingScale
-                    z: 10
-                    width: 174 * root.dictaTheme.spacingScale
-                    padding: 6 * root.dictaTheme.spacingScale
-                    modal: false
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-                    background: Rectangle {
-                        color: root.dictaTheme.darkBackground
-                        border.width: 1
-                        border.color: root.dictaTheme.muted
-                        radius: 4 * root.dictaTheme.spacingScale
-                    }
-                    contentItem: FlatButton {
-                        objectName: "removeProject-" + projectRow.modelData.id
-                        dictaTheme: root.dictaTheme
-                        text: "Remove project"
-                        iconName: "clear"
-                        quiet: true
-                        destructive: true
-                        enabled: root.bridge.runtimePhase === "idle"
-                        onClicked: {
-                            projectActions.close()
-                            if (root.bridge.removeProject(projectRow.modelData.id))
-                                root.bridge.showToast("Project removed")
-                        }
-                    }
+                    transform: Translate { x: projectRow.surfaceOffset }
                 }
 
                 MouseArea {
@@ -282,13 +325,17 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    transform: Translate { x: projectRow.surfaceOffset }
                     onClicked: {
+                        root.pendingDeleteId = ""
+                        root.keyboardIndex = projectRow.index
                         root.bridge.selectProject(projectRow.modelData.id)
                         root.keyboardFocusRequested()
                     }
                     onDoubleClicked: {
+                        root.keyboardIndex = projectRow.index
                         if (root.bridge.selectRecordingProject(projectRow.modelData.id))
-                            root.bridge.showToast("Recording destination · "
+                            root.bridge.showToast("Project selected · "
                                 + (projectRow.modelData.name || projectRow.modelData.id))
                         root.keyboardFocusRequested()
                     }
@@ -307,6 +354,7 @@ Item {
             text: "New project"
             iconName: "add"
             quiet: true
+            centerContent: true
             onClicked: root.addProjectRequested()
         }
 
@@ -322,6 +370,7 @@ Item {
             text: "Settings"
             iconName: "settings"
             quiet: true
+            centerContent: true
             selected: root.settingsActive
             onClicked: root.settingsRequested()
         }

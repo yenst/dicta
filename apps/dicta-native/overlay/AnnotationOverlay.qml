@@ -112,7 +112,7 @@ Window {
         color: "transparent"
         visible: false
         screen: overlay.screen
-        x: screen ? screen.virtualX + screen.width - width - 24 : 0
+        x: screen ? screen.virtualX + 24 : 0
         y: screen ? screen.virtualY + screen.height - height - 34 : 0
         flags: Qt.FramelessWindowHint
             | Qt.Tool

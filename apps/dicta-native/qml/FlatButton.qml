@@ -12,6 +12,7 @@ Button {
     property bool destructive: false
     property bool quiet: false
     property bool iconOnly: false
+    property bool centerContent: false
     property string toolTip: ""
 
     hoverEnabled: true
@@ -29,6 +30,11 @@ Button {
         id: contentRow
         spacing: 7 * root.dictaTheme.spacingScale
 
+        Item {
+            visible: root.centerContent && !root.iconOnly
+            Layout.fillWidth: true
+        }
+
         ThemeIcon {
             visible: root.iconName.length > 0
             Layout.preferredWidth: root.dictaTheme.baseFontSize + 4
@@ -43,7 +49,7 @@ Button {
 
         Text {
             visible: !root.iconOnly
-            Layout.fillWidth: true
+            Layout.fillWidth: !root.centerContent
             text: root.text
             color: !root.enabled ? root.dictaTheme.darkForeground
                 : root.destructive ? root.dictaTheme.red
@@ -55,6 +61,11 @@ Button {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+        }
+
+        Item {
+            visible: root.centerContent && !root.iconOnly
+            Layout.fillWidth: true
         }
     }
 
