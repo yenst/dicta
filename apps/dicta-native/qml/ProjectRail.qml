@@ -56,15 +56,22 @@ Item {
 
     function activateKeyboardSelection() {
         var rows = sortedProjects()
-        if (keyboardIndex >= 0 && keyboardIndex < rows.length)
-            bridge.selectProject(rows[keyboardIndex].id)
+        if (keyboardIndex < 0 || keyboardIndex >= rows.length)
+            return false
+        if (rows[keyboardIndex].selected)
+            return activateRecordingSelection()
+        return bridge.selectProject(rows[keyboardIndex].id)
     }
 
     function activateRecordingSelection() {
         var rows = sortedProjects()
         if (keyboardIndex < 0 || keyboardIndex >= rows.length)
             return false
-        return bridge.selectRecordingProject(rows[keyboardIndex].id)
+        var project = rows[keyboardIndex]
+        if (!bridge.selectRecordingProject(project.id))
+            return false
+        bridge.showToast("Project selected · " + (project.name || project.id))
+        return true
     }
 
     function projectIndex(projectId) {
@@ -164,13 +171,23 @@ Item {
             }
 
             Text {
-                Layout.fillWidth: true
                 text: "Dicta"
                 color: root.dictaTheme.brightForeground
                 font.family: root.dictaTheme.fontFamily
                 font.pixelSize: root.dictaTheme.baseFontSize + 5
                 font.weight: Font.DemiBold
             }
+
+            Rectangle {
+                objectName: "liveRecordingIndicator"
+                visible: root.bridge.runtimePhase === "recording"
+                Layout.preferredWidth: 9 * root.dictaTheme.spacingScale
+                Layout.preferredHeight: width
+                radius: width / 2
+                color: root.dictaTheme.red
+            }
+
+            Item { Layout.fillWidth: true }
         }
 
         Text {
@@ -334,9 +351,7 @@ Item {
                     }
                     onDoubleClicked: {
                         root.keyboardIndex = projectRow.index
-                        if (root.bridge.selectRecordingProject(projectRow.modelData.id))
-                            root.bridge.showToast("Project selected · "
-                                + (projectRow.modelData.name || projectRow.modelData.id))
+                        root.activateRecordingSelection()
                         root.keyboardFocusRequested()
                     }
                 }

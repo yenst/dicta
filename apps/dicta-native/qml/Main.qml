@@ -144,6 +144,14 @@ ApplicationWindow {
             detailPage.resetKeyboardTarget()
     }
 
+    function cycleNavigationColumn(delta) {
+        var count = showingDetail ? 3 : 2
+        navigationColumn = (navigationColumn + delta + count) % count
+        if (navigationColumn === 2)
+            detailPage.resetKeyboardTarget()
+        restoreKeyboardFocus(navigationColumn)
+    }
+
     function moveVertical(delta) {
         if (navigationColumn === 0)
             projectRail.moveKeyboardSelection(delta)
@@ -154,9 +162,15 @@ ApplicationWindow {
     }
 
     function handleNavigationKey(event) {
-        if (!keyboardNavigationEnabled() || event.modifiers !== Qt.NoModifier)
+        if (!keyboardNavigationEnabled())
             return
-        if (event.key === Qt.Key_Left) {
+        if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            var backwards = event.key === Qt.Key_Backtab
+                    || Boolean(event.modifiers & Qt.ShiftModifier)
+            cycleNavigationColumn(backwards ? -1 : 1)
+        } else if (event.modifiers !== Qt.NoModifier) {
+            return
+        } else if (event.key === Qt.Key_Left) {
             if (navigationColumn !== 2 || !detailPage.moveKeyboardHorizontal(-1))
                 moveNavigationColumn(-1)
         } else if (event.key === Qt.Key_Right) {
@@ -171,9 +185,15 @@ ApplicationWindow {
             moveVertical(1)
         else if (event.key === Qt.Key_Escape && navigationColumn > 0)
             moveNavigationColumn(-1)
-        else if (event.key === Qt.Key_Space && navigationColumn === 2 && showingDetail
-                && detailPage.keyboardTarget === 0)
-            detailPage.togglePlayback()
+        else if (event.key === Qt.Key_Space) {
+            if (navigationColumn === 0)
+                projectRail.activateRecordingSelection()
+            else if (navigationColumn === 2 && showingDetail
+                    && detailPage.keyboardTarget === 0)
+                detailPage.togglePlayback()
+            else
+                return
+        }
         else if (event.key === Qt.Key_C && showingDetail)
             detailPage.copyContext()
         else if (event.key === Qt.Key_Delete) {
@@ -441,12 +461,12 @@ ApplicationWindow {
                     anchors.fill: parent
                     spacing: 16 * root.dictaTheme.spacingScale
 
-                    ColumnLayout {
+                    RowLayout {
                         visible: !root.searchExpanded
                         Layout.fillWidth: true
-                        spacing: 4 * root.dictaTheme.spacingScale
+                        spacing: 9 * root.dictaTheme.spacingScale
                         Text {
-                            Layout.fillWidth: true
+                            Layout.maximumWidth: 260 * root.dictaTheme.spacingScale
                             text: root.bridge.currentProject.name || "Dicta"
                             color: root.dictaTheme.brightForeground
                             font.family: root.dictaTheme.fontFamily
@@ -454,27 +474,24 @@ ApplicationWindow {
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 7 * root.dictaTheme.spacingScale
-                            FlatButton {
-                                objectName: "projectBranchBadge"
-                                visible: Boolean(root.bridge.currentProject.branch)
-                                dictaTheme: root.dictaTheme
-                                text: root.bridge.currentProject.branch || ""
-                                iconName: root.branchCopied ? "check" : "branch"
-                                selected: true
-                                toolTip: "Copy Git branch"
-                                onClicked: {
-                                    if (!root.bridge.copyText(root.bridge.currentProject.branch || ""))
-                                        return
-                                    root.branchCopied = true
-                                    branchCopiedTimer.restart()
-                                    root.bridge.showToast("Git branch copied")
-                                }
+                        FlatButton {
+                            objectName: "projectBranchBadge"
+                            visible: Boolean(root.bridge.currentProject.branch)
+                            dictaTheme: root.dictaTheme
+                            text: root.bridge.currentProject.branch || ""
+                            iconName: root.branchCopied ? "check" : "branch"
+                            selected: true
+                            toolTip: "Copy Git branch"
+                            onClicked: {
+                                var branch = root.bridge.currentProject.branch || ""
+                                if (!root.bridge.copyText(branch))
+                                    return
+                                root.branchCopied = true
+                                branchCopiedTimer.restart()
+                                root.bridge.showToast("Git branch copied · " + branch)
                             }
-                            Item { Layout.fillWidth: true }
                         }
+                        Item { Layout.fillWidth: true }
                     }
 
                     Rectangle {
@@ -601,7 +618,8 @@ ApplicationWindow {
                     dictaTheme: root.dictaTheme
                     keyboardActive: root.navigationColumn === 2 && !root.settingsOpen
                     onKeyboardFocusRequested: root.restoreKeyboardFocus(2)
-                    onContextCopied: root.bridge.showToast("Recording ID copied")
+                    onContextCopied: root.bridge.showToast(
+                        root.bridge.selectedRecordingId + " copied")
                     onDeleteRequested: recordingPanel.requestDelete()
                 }
 

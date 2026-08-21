@@ -104,6 +104,22 @@ Item {
             playerLoader.item.seek(seconds)
     }
 
+    function playFrom(seconds) {
+        if (playerLoader.active && playerLoader.item) {
+            playerLoader.item.playFrom(seconds)
+            return true
+        }
+        return bridge.openSelectedRecording()
+    }
+
+    function playTranscriptSegment(segment) {
+        return playFrom(Number(segment && segment.start_seconds || 0))
+    }
+
+    function playTimelineNote(note) {
+        return playFrom(Number(note && note.timestamp_seconds || 0))
+    }
+
     function togglePlayback() {
         if (playerLoader.active && playerLoader.item) {
             playerLoader.item.togglePlayback()
@@ -232,7 +248,7 @@ Item {
                 iconName: root.copied ? "check" : "copy"
                 iconOnly: true
                 quiet: true
-                toolTip: root.copied ? "Recording ID copied" : "Copy recording ID"
+                toolTip: root.copied ? "Agent context copied" : "Copy agent context"
                 selected: root.keyboardActive && root.keyboardTarget === 1 || root.copied
                 onClicked: root.copyContext()
             }
@@ -524,6 +540,13 @@ Item {
                                         radius: width / 2
                                         color: root.dictaTheme.red
                                     }
+                                    MouseArea {
+                                        objectName: "transcriptTimestampLink"
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.playTranscriptSegment(
+                                            segmentRow.modelData)
+                                    }
                                 }
                                 TextEdit {
                                     Layout.fillWidth: true
@@ -574,29 +597,61 @@ Item {
                     spacing: 0
                     Repeater {
                         model: root.chapterRows()
-                        delegate: RowLayout {
+                        delegate: Item {
                             id: chapterRow
                             required property var modelData
                             Layout.fillWidth: true
-                            Layout.leftMargin: 24 * root.dictaTheme.spacingScale
-                            Layout.rightMargin: 26 * root.dictaTheme.spacingScale
-                            Layout.topMargin: 16 * root.dictaTheme.spacingScale
-                            Layout.bottomMargin: 16 * root.dictaTheme.spacingScale
-                            spacing: 20 * root.dictaTheme.spacingScale
-                            Text {
-                                Layout.preferredWidth: 52 * root.dictaTheme.spacingScale
-                                text: root.timestamp(chapterRow.modelData.timestamp_seconds)
-                                color: root.dictaTheme.accent
-                                font.family: root.dictaTheme.fontFamily
-                                font.pixelSize: root.dictaTheme.baseFontSize
+                            Layout.preferredHeight: chapterContent.implicitHeight
+                                + 16 * root.dictaTheme.spacingScale + 1
+                            RowLayout {
+                                id: chapterContent
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.leftMargin: 24 * root.dictaTheme.spacingScale
+                                anchors.rightMargin: 26 * root.dictaTheme.spacingScale
+                                anchors.topMargin: 8 * root.dictaTheme.spacingScale
+                                spacing: 20 * root.dictaTheme.spacingScale
+                                Item {
+                                    Layout.preferredWidth: 52 * root.dictaTheme.spacingScale
+                                    Layout.alignment: Qt.AlignTop
+                                    Layout.preferredHeight: chapterTime.implicitHeight
+                                    Text {
+                                        id: chapterTime
+                                        anchors.left: parent.left
+                                        text: root.timestamp(
+                                            chapterRow.modelData.timestamp_seconds)
+                                        color: root.dictaTheme.accent
+                                        font.family: root.dictaTheme.fontFamily
+                                        font.pixelSize: root.dictaTheme.baseFontSize
+                                        font.weight: Font.DemiBold
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.playFrom(
+                                            chapterRow.modelData.timestamp_seconds)
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: chapterRow.modelData.title
+                                    color: root.dictaTheme.foreground
+                                    font.family: root.dictaTheme.fontFamily
+                                    font.pixelSize: root.dictaTheme.baseFontSize
+                                    elide: Text.ElideRight
+                                }
                             }
-                            Text {
-                                Layout.fillWidth: true
-                                text: modelData.title
-                                color: root.dictaTheme.foreground
-                                font.family: root.dictaTheme.fontFamily
-                                font.pixelSize: root.dictaTheme.baseFontSize + 1
-                                elide: Text.ElideRight
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.leftMargin: 24 * root.dictaTheme.spacingScale
+                                anchors.rightMargin: 26 * root.dictaTheme.spacingScale
+                                height: 1
+                                color: Qt.rgba(root.dictaTheme.muted.r,
+                                    root.dictaTheme.muted.g,
+                                    root.dictaTheme.muted.b, 0.45)
                             }
                         }
                     }
@@ -757,9 +812,10 @@ Item {
                                 font.pixelSize: root.dictaTheme.baseFontSize
                                 font.weight: Font.DemiBold
                                 MouseArea {
+                                    objectName: "timelineNoteTimestampLink"
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.seek(noteRow.modelData.timestamp_seconds)
+                                    onClicked: root.playTimelineNote(noteRow.modelData)
                                 }
                             }
                             Text {
@@ -874,6 +930,7 @@ Item {
                 text: "Open externally"
                 iconName: "play"
                 quiet: true
+                leftAlignContent: true
                 selected: root.actionIndex === 0
                 onClicked: {
                     root.bridge.openSelectedRecording()
@@ -889,6 +946,7 @@ Item {
                     ? "Retry transcription" : "Transcribe again"
                 iconName: "microphone"
                 quiet: true
+                leftAlignContent: true
                 selected: root.actionIndex === 1
                 enabled: root.bridge.runtimePhase === "idle"
                     && Boolean(root.recording.success)
@@ -905,6 +963,7 @@ Item {
                 text: "Reveal files"
                 iconName: "folder-open"
                 quiet: true
+                leftAlignContent: true
                 selected: root.actionIndex === 2
                 onClicked: {
                     root.bridge.revealSelectedRecording()
@@ -924,6 +983,7 @@ Item {
                 text: "Delete recording"
                 iconName: "clear"
                 quiet: true
+                leftAlignContent: true
                 destructive: true
                 selected: root.actionIndex === 3
                 enabled: root.bridge.runtimePhase === "idle"

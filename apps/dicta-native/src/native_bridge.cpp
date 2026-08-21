@@ -182,6 +182,20 @@ QString lastHostError()
     bytes.truncate(qsizetype(length));
     return QString::fromUtf8(bytes);
 }
+
+QString recordingAgentPrompt(
+    const QString &recordingId,
+    const QString &projectName,
+    const QString &projectId,
+    const QString &branch
+)
+{
+    return QStringLiteral(
+        "Use dicta_mcp to inspect recording ID `%1`. Project: `%2` (`%3`). "
+        "Git branch: `%4`. Call get_recording for the transcript and "
+        "get_recording_frames when visual context matters, then implement the request."
+    ).arg(recordingId, projectName, projectId, branch);
+}
 }
 
 NativeBridge::NativeBridge(OverlayController &overlay, QObject *parent)
@@ -1106,11 +1120,44 @@ bool NativeBridge::saveTimelineNotes(const QVariantList &notes)
 
 bool NativeBridge::copySelectedContext()
 {
-    const QString recordingId = selectedRecordingId();
+    const QString recordingId = selectedRecordingId().trimmed();
     if (recordingId.isEmpty()) {
         return false;
     }
-    QGuiApplication::clipboard()->setText(recordingId);
+    QString projectId = m_selectedRecording
+        .value(QStringLiteral("project_id"))
+        .toString();
+    if (projectId.isEmpty()) {
+        projectId = m_currentProject.value(QStringLiteral("id")).toString();
+    }
+    QString projectName = projectId;
+    if (projectId == QStringLiteral("__unprojected__")
+        || projectId == QStringLiteral("general")) {
+        projectName = QStringLiteral("General");
+    } else {
+        for (const QVariant &entry : std::as_const(m_projects)) {
+            const QVariantMap project = entry.toMap();
+            if (project.value(QStringLiteral("id")).toString() == projectId) {
+                projectName = project.value(QStringLiteral("name")).toString();
+                break;
+            }
+        }
+    }
+    if (projectName.isEmpty()) {
+        projectName = QStringLiteral("General");
+    }
+    if (projectId.isEmpty()) {
+        projectId = QStringLiteral("__unprojected__");
+    }
+    QString branch = m_selectedRecording
+        .value(QStringLiteral("git_branch"))
+        .toString();
+    if (branch.isEmpty()) {
+        branch = QStringLiteral("none");
+    }
+    QGuiApplication::clipboard()->setText(
+        recordingAgentPrompt(recordingId, projectName, projectId, branch)
+    );
     m_uiError.clear();
     emit dashboardChanged();
     return true;

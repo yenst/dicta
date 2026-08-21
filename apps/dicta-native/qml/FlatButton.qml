@@ -13,6 +13,7 @@ Button {
     property bool quiet: false
     property bool iconOnly: false
     property bool centerContent: false
+    property bool leftAlignContent: false
     property string toolTip: ""
 
     hoverEnabled: true
@@ -49,7 +50,7 @@ Button {
 
         Text {
             visible: !root.iconOnly
-            Layout.fillWidth: !root.centerContent
+            Layout.fillWidth: !root.centerContent && !root.leftAlignContent
             text: root.text
             color: !root.enabled ? root.dictaTheme.darkForeground
                 : root.destructive ? root.dictaTheme.red
@@ -58,7 +59,8 @@ Button {
             font.family: root.dictaTheme.fontFamily
             font.pixelSize: root.dictaTheme.baseFontSize
             font.weight: root.selected ? Font.DemiBold : Font.Normal
-            horizontalAlignment: Text.AlignHCenter
+            horizontalAlignment: root.leftAlignContent
+                ? Text.AlignLeft : Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }

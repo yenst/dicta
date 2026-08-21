@@ -22,6 +22,11 @@ Item {
         player.pause()
     }
 
+    function playFrom(seconds) {
+        seek(seconds)
+        player.play()
+    }
+
     function togglePlayback() {
         if (player.playbackState === MediaPlayer.PlayingState)
             player.pause()

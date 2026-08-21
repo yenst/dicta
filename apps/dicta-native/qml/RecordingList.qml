@@ -12,6 +12,10 @@ Item {
     property var recordings: bridge.recentRecordings || []
     property bool keyboardFocused: false
     property string pendingDeleteId: ""
+    property int activityFrame: 0
+    readonly property bool firstRowDividerVisible: dividerVisibleAt(0)
+    readonly property string activityIndicatorText:
+        ["[   ]", "[.  ]", "[.. ]", "[...]"][activityFrame]
     readonly property bool deleteActionVisible: pendingDeleteId.length > 0
     signal keyboardFocusRequested()
 
@@ -112,9 +116,29 @@ Item {
     function statusLabel(value) {
         if (value === "complete") return "Transcribed"
         if (value === "failed") return "Retry"
-        if (value === "processing") return "Transcribing"
-        if (value === "pending") return "Pending"
+        if (value === "processing" || value === "pending")
+            return root.activityIndicatorText
         return "Unavailable"
+    }
+
+    function hasActiveTranscription() {
+        for (var i = 0; i < recordings.length; ++i) {
+            var state = String(recordings[i].transcription || "")
+            if (state === "pending" || state === "processing")
+                return true
+        }
+        return false
+    }
+
+    function dividerVisibleAt(index) {
+        var rows = filteredRecordings()
+        if (index < 0 || index >= rows.length)
+            return false
+        if (String(bridge.selectedRecordingId || "") === String(rows[index].id || ""))
+            return false
+        return index + 1 >= rows.length
+            || root.dayKey(rows[index].started_at) !== root.dayKey(rows[index + 1].started_at)
+            || String(bridge.selectedRecordingId || "") !== String(rows[index + 1].id || "")
     }
 
     Rectangle {
@@ -172,7 +196,6 @@ Item {
                 property bool selected: root.bridge.selectedRecordingId === modelData.id
                 property bool keyboardSelected: root.keyboardFocused && selected
                 property bool deleteArmed: root.pendingDeleteId === modelData.id
-                property bool copied: false
                 height: (firstOfDay ? 46 : 0) * root.dictaTheme.spacingScale
                     + 88 * root.dictaTheme.spacingScale
 
@@ -240,6 +263,7 @@ Item {
                         color: root.dictaTheme.accent
                     }
                     Rectangle {
+                        visible: root.dividerVisibleAt(recordingRow.index)
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
@@ -248,6 +272,26 @@ Item {
                         height: 1
                         color: Qt.rgba(root.dictaTheme.muted.r, root.dictaTheme.muted.g,
                             root.dictaTheme.muted.b, 0.5)
+                    }
+                    Rectangle {
+                        visible: recordingRow.selected
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        height: 1
+                        color: Qt.rgba(root.dictaTheme.accent.r,
+                            root.dictaTheme.accent.g,
+                            root.dictaTheme.accent.b, 0.55)
+                    }
+                    Rectangle {
+                        visible: recordingRow.selected
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: Qt.rgba(root.dictaTheme.accent.r,
+                            root.dictaTheme.accent.g,
+                            root.dictaTheme.accent.b, 0.55)
                     }
 
                     Text {
@@ -312,7 +356,6 @@ Item {
                         }
                         ThemeIcon {
                             visible: recordingRow.modelData.transcription === "complete"
-                                && !copyRecordingButton.visible
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: 17 * root.dictaTheme.spacingScale
@@ -333,35 +376,6 @@ Item {
                                 : root.dictaTheme.darkForeground
                             font.family: root.dictaTheme.fontFamily
                             font.pixelSize: Math.max(9, root.dictaTheme.baseFontSize - 1)
-                        }
-                        FlatButton {
-                            id: copyRecordingButton
-                            objectName: "copyRecording-" + recordingRow.modelData.id
-                            visible: rowMouse.containsMouse && !recordingRow.deleteArmed
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.bottomMargin: 9 * root.dictaTheme.spacingScale
-                            width: 30 * root.dictaTheme.spacingScale
-                            height: width
-                            z: 2
-                            dictaTheme: root.dictaTheme
-                            iconName: recordingRow.copied ? "check" : "copy"
-                            iconOnly: true
-                            quiet: true
-                            toolTip: "Copy recording ID"
-                            onClicked: {
-                                if (!root.bridge.copyText(recordingRow.modelData.id))
-                                    return
-                                recordingRow.copied = true
-                                copiedResetTimer.restart()
-                                root.bridge.showToast("Recording ID copied")
-                            }
-                        }
-                        Timer {
-                            id: copiedResetTimer
-                            interval: 1600
-                            repeat: false
-                            onTriggered: recordingRow.copied = false
                         }
                     }
 
@@ -424,6 +438,13 @@ Item {
             width: 2
             color: root.dictaTheme.accent
         }
+    }
+
+    Timer {
+        interval: 280
+        repeat: true
+        running: root.hasActiveTranscription()
+        onTriggered: root.activityFrame = (root.activityFrame + 1) % 4
     }
 
     Timer {

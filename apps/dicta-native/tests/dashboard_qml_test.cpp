@@ -337,6 +337,20 @@ public:
     Q_INVOKABLE bool copySelectedContext()
     {
         ++copyCalls;
+        const QString projectName = currentProject
+            .value(QStringLiteral("name"), QStringLiteral("General"))
+            .toString();
+        const QString projectId = currentProject
+            .value(QStringLiteral("id"), QStringLiteral("__unprojected__"))
+            .toString();
+        const QString branch = currentProject
+            .value(QStringLiteral("branch"), QStringLiteral("none"))
+            .toString();
+        copiedText = QStringLiteral(
+            "Use dicta_mcp to inspect recording ID `%1`. Project: `%2` (`%3`). "
+            "Git branch: `%4`."
+        ).arg(selectedRecordingId, projectName, projectId,
+            branch.isEmpty() ? QStringLiteral("none") : branch);
         return true;
     }
 
@@ -557,9 +571,13 @@ private slots:
     void multimediaPlayerTracksTheSelectedRecording();
     void detailActionsRequireConfirmationAndUseSupportedCommands();
     void timelineNotesUseThePlaybackCursorAndTypedBridge();
+    void transcriptAndNoteTimestampsOpenPlayback();
     void recordingSurfaceDoesNotExposeAnnotationToolbar();
     void filterShortcutOpensTheContextSearch();
     void keyboardNavigationSelectsCopiesAndDeletes();
+    void pendingRecordingAnimatesAndSelectedBordersAreContinuous();
+    void copiedContextNamesGeneralProjectAndBranch();
+    void tabCyclesCustomColumnsWithoutEnteringNativeFocusChain();
     void projectKeyboardNavigationKeepsGeneralFirst();
     void settingsCloseWithEscapeAndLeftArrow();
     void settingsControlsUpdateTheTypedNativeBridge();
@@ -635,6 +653,10 @@ void DashboardQmlTest::recordingDashboardInvokesStop()
     QVERIFY2(dashboard, qPrintable(component.errorString()));
     auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
     QVERIFY(window != nullptr);
+    QObject *recordingIndicator = dashboard->findChild<QObject *>(
+        QStringLiteral("liveRecordingIndicator"));
+    QVERIFY(recordingIndicator != nullptr);
+    QVERIFY(recordingIndicator->property("visible").toBool());
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
 
     QCOMPARE(bridge.startCalls, 0);
@@ -795,6 +817,54 @@ void DashboardQmlTest::timelineNotesUseThePlaybackCursorAndTypedBridge()
     QCOMPARE(bridge.voiceCancelCalls, 1);
 }
 
+void DashboardQmlTest::transcriptAndNoteTimestampsOpenPlayback()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.selectedRecordingId = QStringLiteral("timed-recording");
+    bridge.selectedRecording = QVariantMap {
+        {QStringLiteral("id"), QStringLiteral("timed-recording")},
+        {QStringLiteral("success"), true},
+        {QStringLiteral("video_url"), QStringLiteral("file:///tmp/fake.mp4")},
+        {QStringLiteral("transcript_segments"), QVariantList {
+            QVariantMap {{QStringLiteral("start_seconds"), 12.0},
+                         {QStringLiteral("end_seconds"), 18.0},
+                         {QStringLiteral("text"), QStringLiteral("Timed segment")}},
+        }},
+        {QStringLiteral("timeline_notes"), QVariantList {
+            QVariantMap {{QStringLiteral("id"), QStringLiteral("note-23")},
+                         {QStringLiteral("timestamp_seconds"), 23.0},
+                         {QStringLiteral("text"), QStringLiteral("Timed note")}},
+        }},
+    };
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    QObject *detail = dashboard->findChild<QObject *>(
+        QStringLiteral("recordingDetailPage"));
+    QVERIFY(detail != nullptr);
+    QVariant opened;
+    const QVariant transcriptSegment = QVariantMap {
+        {QStringLiteral("start_seconds"), 12.0},
+    };
+    const QVariant timelineNote = QVariantMap {
+        {QStringLiteral("timestamp_seconds"), 23.0},
+    };
+    QVERIFY(QMetaObject::invokeMethod(
+        detail, "playTranscriptSegment", Q_RETURN_ARG(QVariant, opened),
+        Q_ARG(QVariant, transcriptSegment)
+    ));
+    QVERIFY(opened.toBool());
+    QCOMPARE(bridge.openCalls, 1);
+    QVERIFY(QMetaObject::invokeMethod(
+        detail, "playTimelineNote", Q_RETURN_ARG(QVariant, opened),
+        Q_ARG(QVariant, timelineNote)
+    ));
+    QVERIFY(opened.toBool());
+    QCOMPARE(bridge.openCalls, 2);
+}
+
 void DashboardQmlTest::recordingSurfaceDoesNotExposeAnnotationToolbar()
 {
     DashboardBridge bridge;
@@ -885,17 +955,23 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QVERIFY(!detailBorder->property("visible").toBool());
 
     QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("projectPathBadge")) == nullptr);
+    QVERIFY(dashboard->findChild<QObject *>(QStringLiteral("copyRecording-first")) == nullptr);
     QVERIFY(QMetaObject::invokeMethod(branchBadge, "clicked"));
     QCOMPARE(bridge.copiedText, QStringLiteral("main"));
     QCOMPARE(bridge.toastCalls, 1);
-    QCOMPARE(bridge.toastMessage, QStringLiteral("Git branch copied"));
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Git branch copied · main"));
 
     QTest::keyClick(window, Qt::Key_Down);
     QTRY_COMPARE(bridge.selectedRecordingId, QStringLiteral("second"));
     QTest::keyClick(window, Qt::Key_C);
     QCOMPARE(bridge.copyCalls, 1);
     QCOMPARE(bridge.toastCalls, 2);
-    QCOMPARE(bridge.toastMessage, QStringLiteral("Recording ID copied"));
+    QVERIFY(bridge.copiedText.contains(QStringLiteral("dicta_mcp")));
+    QVERIFY(bridge.copiedText.contains(QStringLiteral("second")));
+    QVERIFY(bridge.copiedText.contains(QStringLiteral("Project: `dicta` (`dicta`)")));
+    QVERIFY(bridge.copiedText.contains(QStringLiteral("Git branch: `main`")));
+    QVERIFY(!bridge.copiedText.contains(QStringLiteral("Hello agent")));
+    QCOMPARE(bridge.toastMessage, QStringLiteral("second copied"));
 
     QTest::keyClick(window, Qt::Key_Right);
     QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
@@ -949,6 +1025,103 @@ void DashboardQmlTest::keyboardNavigationSelectsCopiesAndDeletes()
     QCOMPARE(bridge.toastMessage, QStringLiteral("Recording deleted"));
 }
 
+void DashboardQmlTest::pendingRecordingAnimatesAndSelectedBordersAreContinuous()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.recentRecordings = QVariantList {
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("first")},
+                     {QStringLiteral("started_at"), QStringLiteral("2026-08-21T10:00:00Z")},
+                     {QStringLiteral("transcription"), QStringLiteral("complete")}},
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("pending")},
+                     {QStringLiteral("started_at"), QStringLiteral("2026-08-21T10:01:00Z")},
+                     {QStringLiteral("transcription"), QStringLiteral("pending")}},
+    };
+    bridge.selectRecording(QStringLiteral("pending"));
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    QTRY_VERIFY(window->isVisible());
+
+    QObject *panel = dashboard->findChild<QObject *>(QStringLiteral("recordingPanel"));
+    QVERIFY(panel != nullptr);
+    QVERIFY(!panel->property("firstRowDividerVisible").toBool());
+    const QString initial = panel->property("activityIndicatorText").toString();
+    QVERIFY(initial.startsWith(QLatin1Char('[')));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        panel->property("activityIndicatorText").toString() != initial,
+        1000
+    );
+}
+
+void DashboardQmlTest::copiedContextNamesGeneralProjectAndBranch()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.currentProject = QVariantMap {
+        {QStringLiteral("id"), QStringLiteral("__unprojected__")},
+        {QStringLiteral("name"), QStringLiteral("General")},
+        {QStringLiteral("branch"), QString()},
+    };
+    bridge.selectRecording(QStringLiteral("20260821-16-17-37"));
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    QObject *detail = dashboard->findChild<QObject *>(
+        QStringLiteral("recordingDetailPage"));
+    QVERIFY(detail != nullptr);
+
+    QVERIFY(QMetaObject::invokeMethod(detail, "copyContext"));
+    QVERIFY(bridge.copiedText.startsWith(QStringLiteral("Use dicta_mcp")));
+    QVERIFY(bridge.copiedText.contains(
+        QStringLiteral("Project: `General` (`__unprojected__`)")));
+    QVERIFY(bridge.copiedText.contains(QStringLiteral("Git branch: `none`")));
+    QVERIFY(!bridge.copiedText.contains(QStringLiteral("Hello agent")));
+    QCOMPARE(bridge.toastMessage, QStringLiteral("20260821-16-17-37 copied"));
+}
+
+void DashboardQmlTest::tabCyclesCustomColumnsWithoutEnteringNativeFocusChain()
+{
+    DashboardBridge bridge;
+    DashboardTheme theme;
+    bridge.recentRecordings = QVariantList {
+        QVariantMap {{QStringLiteral("id"), QStringLiteral("first")},
+                     {QStringLiteral("transcription"), QStringLiteral("complete")}},
+    };
+    bridge.selectRecording(QStringLiteral("first"));
+    QQmlEngine engine;
+    QQmlComponent component = dashboardComponent(engine);
+    QScopedPointer<QObject> dashboard(createDashboard(component, bridge, theme));
+    QVERIFY2(dashboard, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(dashboard.get());
+    QVERIFY(window != nullptr);
+    window->show();
+    window->requestActivate();
+    QTRY_VERIFY(window->isActive());
+    QObject *focusItem = dashboard->findChild<QObject *>(
+        QStringLiteral("keyboardNavigationFocus"));
+    QVERIFY(focusItem != nullptr);
+    QTRY_VERIFY(focusItem->property("activeFocus").toBool());
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 1);
+
+    QTest::keyClick(window, Qt::Key_Tab);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
+    QVERIFY(focusItem->property("activeFocus").toBool());
+
+    QTest::keyClick(window, Qt::Key_Tab);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 0);
+    QVERIFY(focusItem->property("activeFocus").toBool());
+
+    QTest::keyClick(window, Qt::Key_Backtab);
+    QCOMPARE(dashboard->property("navigationColumn").toInt(), 2);
+    QVERIFY(focusItem->property("activeFocus").toBool());
+}
+
 void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
 {
     DashboardBridge bridge;
@@ -989,13 +1162,17 @@ void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
     QCOMPARE(bridge.currentProject.value(QStringLiteral("id")).toString(),
              QStringLiteral("__unprojected__"));
     QCOMPARE(bridge.recordingProjectSelectCalls, 0);
-    QVariant destinationSelected;
-    QVERIFY(QMetaObject::invokeMethod(
-        rail, "activateRecordingSelection",
-        Q_RETURN_ARG(QVariant, destinationSelected)
-    ));
-    QVERIFY(destinationSelected.toBool());
+    QTest::keyClick(window, Qt::Key_Return);
     QCOMPARE(bridge.recordingProjectSelectCalls, 1);
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Project selected · General"));
+
+    QTest::keyClick(window, Qt::Key_Down);
+    QCOMPARE(rail->property("keyboardIndex").toInt(), 1);
+    QTest::keyClick(window, Qt::Key_Space);
+    QCOMPARE(bridge.recordingProjectSelectCalls, 2);
+    QCOMPARE(bridge.currentProject.value(QStringLiteral("id")).toString(),
+             QStringLiteral("dicta"));
+    QCOMPARE(bridge.toastMessage, QStringLiteral("Project selected · dicta"));
 
     QVariant linked;
     QVERIFY(QMetaObject::invokeMethod(
@@ -1006,7 +1183,6 @@ void DashboardQmlTest::projectKeyboardNavigationKeepsGeneralFirst()
     QCOMPARE(bridge.addProjectCalls, 1);
     QCOMPARE(bridge.addedProjectPath, QStringLiteral("/tmp/linked-repository"));
 
-    QTest::keyClick(window, Qt::Key_Down);
     QCOMPARE(rail->property("keyboardIndex").toInt(), 1);
     QTest::keyClick(window, Qt::Key_Delete);
     QCOMPARE(bridge.removeProjectCalls, 0);
